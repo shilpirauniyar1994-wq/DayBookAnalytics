@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+env/
+venv/
+whatsapp_bridge/node_modules
+whatsapp_bridge/auth_info_baileys
+whatsapp_bridge/qr.png
+.system_generated
+scratch
+*.csv
+*.xlsx
