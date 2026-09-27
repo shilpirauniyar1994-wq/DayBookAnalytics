@@ -187,17 +187,23 @@ def extract_invoice_metadata(filepath: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Fallback supplier from filename
+    # Fallback supplier from filename / path
     if not meta['supplier']:
         f_lower = fname.lower()
         if 'huabei' in f_lower or 'hb' in f_lower:
             meta['supplier'] = 'Huabei'
         elif 'rara' in f_lower:
             meta['supplier'] = 'Rara'
-        elif 'vg' in f_lower:
-            meta['supplier'] = 'Huabei'
         elif 'shivam' in f_lower:
             meta['supplier'] = 'Shivam'
+        elif 'yiao' in f_lower:
+            meta['supplier'] = 'Yiao'
+        elif 'vg' in f_lower:
+            # VG is the consignee/importer (Vikesh Gupta). Check for Rara or border hints
+            if any(k in f_lower for k in ['rara', 'kerung', 'ktm', '4th', 'loaded']):
+                meta['supplier'] = 'Rara'
+            else:
+                meta['supplier'] = 'China Supplier'
         else:
             meta['supplier'] = 'Import Supplier'
 
@@ -520,7 +526,8 @@ def parse_commercial_invoice(
 
 
     except Exception as e:
-        print(f"Error parsing invoice {filepath}: {e}")
+        safe_path = str(filepath).encode('ascii', 'replace').decode('ascii')
+        print(f"Error parsing invoice {safe_path}: {e}")
     finally:
         gc.collect()
 
@@ -598,24 +605,40 @@ def find_candidate_purchase_vouchers(
 
     candidates = []
     for v in vouchers:
-        # 1. Code overlap
+        # 1. High-recall item overlap matching
         matches = 0
-        if item_codes:
-            for ic in item_codes:
-                if any(ic in pc for pc in v['prods_clean']):
-                    matches += 1
-            s_codes = matches / len(item_codes)
-        else:
-            s_codes = 0.0
+        for it in invoice_items:
+            it_name = it.get('supplier_item_no', '')
+            it_clean = clean_str(it_name)
+            it_words = set(re.findall(r'[a-zA-Z0-9]+', it_name.lower())) - {'pcs', 'crt', 'per', 'set', 'no', 'box', 'colour', 'color'}
+            
+            matched = False
+            for prod, pc in zip(v['products'], v['prods_clean']):
+                if it_clean and (it_clean in pc or pc in it_clean):
+                    matched = True
+                    break
+                p_words = set(re.findall(r'[a-zA-Z0-9]+', prod.lower()))
+                common = it_words.intersection(p_words)
+                if len(common) >= 2 or (len(common) == 1 and any(len(w) >= 4 for w in common)):
+                    matched = True
+                    break
+            if matched:
+                matches += 1
+
+        # CRITICAL: A purchase voucher with 0 item overlap is NEVER a candidate
+        if matches == 0:
+            continue
+
+        s_codes = matches / max(1, len(invoice_items))
 
         # 2. Party & Doc Name score
-        s_party = 0.0
+        s_party = 0.40
         v_label = clean_str(f"{v['voucher_no']} {v['party_name']}")
         sup_clean = clean_str(metadata.get('supplier', ''))
         doc_clean = clean_str(metadata.get('doc_no', ''))
 
         if sup_clean and sup_clean in v_label:
-            s_party = max(s_party, 0.70)
+            s_party = max(s_party, 0.85)
         if doc_clean and doc_clean in v_label:
             s_party = max(s_party, 0.95)
 
@@ -624,7 +647,7 @@ def find_candidate_purchase_vouchers(
         if m_num:
             num_str = m_num.group(1)
             if num_str in v_label and ('huabei' in v_label or 'hb' in v_label or 'rara' in v_label):
-                s_party = max(s_party, 0.85)
+                s_party = max(s_party, 0.75)
 
         # 3. Date score
         s_date = 0.50
@@ -648,25 +671,23 @@ def find_candidate_purchase_vouchers(
         # 4. Count score
         count_ratio = 1.0 - min(abs(len(invoice_items) - v['item_count']) / max(len(invoice_items), v['item_count']), 1.0)
 
-        # Weighted total score
-        total_score = (0.50 * s_codes) + (0.25 * s_party) + (0.15 * s_date) + (0.10 * count_ratio)
+        # Weighted total score: item overlap dominates (60%)
+        total_score = (0.60 * s_codes) + (0.15 * s_party) + (0.15 * s_date) + (0.10 * count_ratio)
 
-        # Keep candidates with meaningful overlap or similarity
-        if matches >= 2 or s_codes >= 0.15 or s_party >= 0.70:
-            candidates.append({
-                'voucher_no': v['voucher_no'],
-                'party_name': v['party_name'],
-                'date': v['date'],
-                'credit_amount': v['credit_amount'],
-                'item_count': v['item_count'],
-                'overlap_count': matches,
-                'overlap_ratio': round(s_codes, 3),
-                'score': round(total_score, 3),
-                'confidence_pct': int(round(total_score * 100)),
-                'is_auto_matched': bool(total_score >= 0.70 and matches >= 4)
-            })
+        candidates.append({
+            'voucher_no': v['voucher_no'],
+            'party_name': v['party_name'],
+            'date': v['date'],
+            'credit_amount': v['credit_amount'],
+            'item_count': v['item_count'],
+            'overlap_count': matches,
+            'overlap_ratio': round(s_codes, 3),
+            'score': round(total_score, 3),
+            'confidence_pct': int(round(total_score * 100)),
+            'is_auto_matched': bool(total_score >= 0.70 and matches >= 4)
+        })
 
-    candidates.sort(key=lambda x: x['score'], reverse=True)
+    candidates.sort(key=lambda x: (x['confidence_pct'], x['overlap_count']), reverse=True)
     return candidates[:limit]
 
 def match_invoice_items_against_voucher(
@@ -1072,7 +1093,8 @@ def extract_and_archive_all_new_invoices(
             archive_invoice_file(fname, folder=folder)
             files_processed.append(fname)
         except Exception as e:
-            print(f"Error processing {fname}: {e}")
+            safe_fname = str(fname).encode('ascii', 'replace').decode('ascii')
+            print(f"Error processing {safe_fname}: {e}")
 
     # Upsert all extracted items into database
     stats = db.upsert_commercial_invoice_items(all_matched_items)

@@ -61,28 +61,33 @@ with c_upload:
         help="Upload a supplier commercial invoice or container loaded list (e.g. VG Loaded List) to automatically parse, extract clean item names, carton ranges, and RMB prices."
     )
     if uploaded_file is not None:
-        save_path = os.path.join(folder, uploaded_file.name)
-        upload_sig = f"{uploaded_file.name}_{uploaded_file.size}"
+        clean_name = uploaded_file.name.replace('（', '(').replace('）', ')')
+        clean_name = re.sub(r'[\r\n\t]', '', clean_name).strip()
+        save_path = os.path.join(folder, clean_name)
+        upload_sig = f"{clean_name}_{uploaded_file.size}"
         
-        # Check if new upload or file is missing on disk
-        if st.session_state.get('last_upload_sig') != upload_sig or not os.path.exists(save_path):
+        # Check if new upload
+        if st.session_state.get('last_upload_sig') != upload_sig:
             with open(save_path, "wb") as f_out:
                 f_out.write(uploaded_file.getbuffer())
             st.session_state['last_upload_sig'] = upload_sig
-            st.session_state['selected_invoice_file'] = uploaded_file.name
-            st.toast(f"Saved {uploaded_file.name} successfully!", icon="✅")
-            st.success(f"✅ Uploaded `{uploaded_file.name}` ({uploaded_file.size / 1024:.1f} KB) to `{folder}/`! Ready for reconciliation below.")
+            st.session_state['selected_invoice_file'] = clean_name
+            target_label = f"📥 [New] {clean_name}"
+            st.session_state['reconcile_active_invoice_choice'] = target_label
+            st.session_state['upload_success_msg'] = f"Uploaded `{clean_name}` ({uploaded_file.size / 1024:.1f} KB) successfully! Selected below for reconciliation."
             st.rerun()
         else:
             col_u1, col_u2 = st.columns([3, 1])
             with col_u1:
-                st.caption(f"📁 Loaded `{uploaded_file.name}` ({uploaded_file.size / 1024:.1f} KB). Ready for reconciliation below.")
+                st.caption(f"📁 Loaded `{clean_name}` ({uploaded_file.size / 1024:.1f} KB). Ready for reconciliation below.")
             with col_u2:
-                if st.button("🔄 Overwrite File", key="force_resave_btn", help="Re-save this uploaded file to disk"):
+                if st.button("🔄 Overwrite & Re-parse", key="force_resave_btn", help="Re-save this uploaded file to disk and re-parse"):
                     with open(save_path, "wb") as f_out:
                         f_out.write(uploaded_file.getbuffer())
-                    st.session_state['selected_invoice_file'] = uploaded_file.name
-                    st.success(f"Overwrote `{uploaded_file.name}`")
+                    target_label = f"📥 [New] {clean_name}"
+                    st.session_state['reconcile_active_invoice_choice'] = target_label
+                    st.session_state['selected_invoice_file'] = clean_name
+                    st.session_state['upload_success_msg'] = f"Overwrote and refreshed `{clean_name}`!"
                     st.rerun()
 
 with c_ingest:
@@ -112,6 +117,9 @@ if 'ingest_result' in st.session_state:
     - **RMB Prices Updated:** {res['updated_prices']} items
     - **Auto-Matched to Tally:** {res['auto_matched']} items
     """)
+
+if 'upload_success_msg' in st.session_state:
+    st.success(f"✅ {st.session_state.pop('upload_success_msg')}")
 
 # ---------------------------------------------------------------------------
 # TABS
@@ -148,16 +156,19 @@ with tab_reconcile:
     st.subheader("🎯 Stage 1 & 2: Macro Voucher Pairing & Micro Item Reconciliation")
     st.caption("Select any uploaded or archived commercial invoice to automatically match with its corresponding DayBook Purchase Voucher and reconcile item RMB prices.")
 
-    # All available invoice files
+    # Re-discover all current available invoice files
+    current_unprocessed = invoice_matcher.get_unprocessed_invoices(folder)
+    current_archived = [f for f in sorted(os.listdir(archive_folder)) if f.lower().endswith(('.xlsx', '.xls')) and not f.startswith(('~', '.'))] if os.path.exists(archive_folder) else []
+
     all_available_files = []
     file_path_map = {}
 
-    for uf in unprocessed_files:
+    for uf in current_unprocessed:
         label = f"📥 [New] {uf}"
         all_available_files.append(label)
         file_path_map[label] = os.path.join(folder, uf)
 
-    for af in archived_files:
+    for af in current_archived:
         label = f"🗃️ [Archived] {af}"
         all_available_files.append(label)
         file_path_map[label] = os.path.join(archive_folder, af)
@@ -165,19 +176,27 @@ with tab_reconcile:
     if not all_available_files:
         st.info("No commercial invoice spreadsheets available. Upload an Excel file above to begin matching.")
     else:
-        # Default file selection
-        default_file_idx = 0
+        # If an uploaded or selected invoice was set, ensure it is the active choice
         if 'selected_invoice_file' in st.session_state:
-            target_f = st.session_state.pop('selected_invoice_file')
-            for i, lab in enumerate(all_available_files):
+            target_f = st.session_state['selected_invoice_file']
+            for lab in all_available_files:
                 if target_f in lab:
-                    default_file_idx = i
+                    st.session_state['reconcile_active_invoice_choice'] = lab
                     break
+
+        # Validate that the active choice exists in all_available_files
+        current_choice = st.session_state.get('reconcile_active_invoice_choice')
+        if current_choice not in all_available_files:
+            current_choice = all_available_files[0]
+            st.session_state['reconcile_active_invoice_choice'] = current_choice
+
+        default_file_idx = all_available_files.index(current_choice)
 
         selected_label = st.selectbox(
             "Select Commercial Invoice to Reconcile:",
             options=all_available_files,
             index=default_file_idx,
+            key="reconcile_active_invoice_choice",
             help="Choose an invoice spreadsheet to inspect and reconcile against DayBook Purchase Vouchers"
         )
         selected_file_path = file_path_map[selected_label]
@@ -192,6 +211,8 @@ with tab_reconcile:
             custom_header_row=custom_row
         )
         meta = invoice_matcher.extract_invoice_metadata(selected_file_path)
+
+        st.info(f"📄 **Active File:** `{os.path.basename(selected_file_path)}` — **{len(invoice_items)} item(s) extracted** | Supplier: **{meta.get('supplier') or 'Import Supplier'}** | Doc: **{meta.get('doc_no') or '—'}**")
 
         if not invoice_items:
             st.error(f"⚠️ Could not automatically extract items and RMB prices from `{os.path.basename(selected_file_path)}`.")
