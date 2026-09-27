@@ -6,6 +6,7 @@ and photo retrieval using Google Gemini's native tool calling.
 
 import os
 import re
+import time
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 from google import genai
@@ -73,19 +74,86 @@ Rules:
    - If the user asks in Hindi or English, respond in their respective language.
 
 6. ACCURACY:
-   - Only return genuine matching products from the database tools. Never invent or re-label unrelated products!
+7. VISUAL PRODUCT MATCHING (PHOTO INPUT):
+   - When the user sends a photo of an item, toy, box, or packaging:
+     a) FIRST: Carefully examine the packaging and product for any printed Model Numbers, Item Numbers, Art Numbers, or Codes (e.g. '3398-1', '953Y', '6608', '8802', 'JH-808', 'NO. XXXX', 'Item No.').
+     b) SECOND: If a model code or item number is found, immediately call `search_products(search_term=extracted_code)`.
+     c) THIRD: If no code is visible (e.g., loose, unboxed toy), identify the physical object, category, color, and key features (e.g., 'bubble gun', 'rc crawler yellow', 'kitchen suitcase'), and call `search_products(search_term=key_feature_or_category)`.
+     d) If an exact match is found, present:
+        📸 *Product Identified!*
+        📦 *[Product Name]*
+        • Live Stock: [Stock in PCS]
+        • Wholesale Rate: Rs. [Price]
+        • Status: [In Stock / Out of Stock]
+        • Photo: Embed our official catalog photo: ![Product Name](image_url)
+     e) If multiple possible items match, list the top 2-3 options with their photos, names, stock, and prices, and ask: 'Which of these matches the item you are looking for?'
 """
 
 # Available models in priority order
 MODEL_CANDIDATES = [
-    "gemini-3.1-flash-lite-preview",
     "gemini-flash-latest",
+    "gemini-3.8-flash",
     "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-pro-latest",
 ]
+
+def ask_hermes_with_image(
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+    user_message: str = ""
+) -> Dict[str, Any]:
+    """
+    Sends an image and optional prompt to Google Gemini with Supabase search tools.
+    Performs visual OCR (reading box model numbers) and visual semantic matching.
+    """
+    client = get_gemini_client()
+    last_err = None
+
+    prompt_text = (
+        user_message.strip()
+        if user_message and user_message.strip()
+        else "Identify what toy product this is from our catalog. Read any visible model codes or item numbers on the box/product, and look up its live stock, wholesale price, and costing."
+    )
+
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    contents = [image_part, prompt_text]
+
+    for model_name in MODEL_CANDIDATES:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    tools=[search_products, get_product_costing],
+                    system_instruction=SYSTEM_INSTRUCTION,
+                )
+            )
+
+            reply_text = response.text or ""
+            image_urls = re.findall(r'!\[.*?\]\(((?:https?://|local://).*?\.(?:jpe?g|png|webp)|[^\s\)]+)\)', reply_text, re.IGNORECASE)
+
+            return {
+                "reply": reply_text,
+                "image_urls": image_urls,
+                "model_used": model_name,
+                "status": "success"
+            }
+        except Exception as e:
+            last_err = e
+            time.sleep(1)
+            continue
+
+    return {
+        "reply": f"Sorry, I encountered an error analyzing the photo: {last_err}",
+        "image_urls": [],
+        "model_used": None,
+        "status": "error"
+    }
 
 def ask_hermes(user_message: str) -> Dict[str, Any]:
     """
-    Sends a query to Google Gemini with Supabase search and costing tools.
+    Sends a text query to Google Gemini with Supabase search and costing tools.
     Returns:
         {
             "reply": str, # Markdown text response
@@ -110,7 +178,7 @@ def ask_hermes(user_message: str) -> Dict[str, Any]:
             reply_text = response.text or ""
 
             # Extract image URLs from markdown for WhatsApp media sending
-            image_urls = re.findall(r'!\[.*?\]\((https?://[^\s\)]+)\)', reply_text)
+            image_urls = re.findall(r'!\[.*?\]\(((?:https?://|local://).*?\.(?:jpe?g|png|webp)|[^\s\)]+)\)', reply_text, re.IGNORECASE)
 
             return {
                 "reply": reply_text,
@@ -120,6 +188,7 @@ def ask_hermes(user_message: str) -> Dict[str, Any]:
             }
         except Exception as e:
             last_err = e
+            time.sleep(1)
             continue
 
     return {

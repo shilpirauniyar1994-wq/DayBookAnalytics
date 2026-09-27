@@ -8,9 +8,10 @@ import os
 import sys
 import json
 import re
+import base64
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import List, Dict, Any, Tuple
-from google_hermes_engine import ask_hermes
+from google_hermes_engine import ask_hermes, ask_hermes_with_image
 
 try:
     if hasattr(sys.stdout, "reconfigure"):
@@ -29,7 +30,7 @@ def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, Any
     all embedded images (both remote URLs and local server filepaths) with their captions.
     """
     # 1. Extract markdown images ![alt](target)
-    img_matches = re.findall(r'!\[(.*?)\]\(([^\s\)]+)\)', raw_text)
+    img_matches = re.findall(r'!\[(.*?)\]\(((?:https?://|local://).*?\.(?:jpe?g|png|webp)|[^\s\)]+)\)', raw_text, re.IGNORECASE)
     images = []
     for alt, target in img_matches:
         caption = f"*{alt}*" if alt else ""
@@ -56,7 +57,7 @@ def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, Any
     text = raw_text
 
     # 3. Strip out the ![alt](url) tags from text
-    text = re.sub(r'!\[.*?\]\([^\s\)]+\)\n?', '', text)
+    text = re.sub(r'!\[.*?\]\(((?:https?://|local://).*?\.(?:jpe?g|png|webp)|[^\s\)]+)\)\n?', '', text, flags=re.IGNORECASE)
 
     # 4. Convert headers (### Title) to WhatsApp bold (*Title*)
     text = re.sub(r'#{1,6}\s*(.*)', r'*\1*', text)
@@ -115,18 +116,30 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                 return
 
             user_msg = str(payload.get('message', '')).strip()
+            image_b64 = payload.get('image_base64')
+            mime_type = payload.get('mime_type', 'image/jpeg')
             sender = payload.get('sender', 'Unknown')
             push_name = payload.get('push_name', 'Customer')
 
-            if not user_msg:
-                self._send_json(400, {"error": "Message parameter is required"})
+            if not user_msg and not image_b64:
+                self._send_json(400, {"error": "Message or image_base64 parameter is required"})
                 return
 
-            print(f"[API Server] Incoming message from {push_name} ({sender}): {user_msg}", flush=True)
+            has_photo_tag = " [PHOTO ATTACHED]" if image_b64 else ""
+            print(f"[API Server] Incoming message from {push_name} ({sender}): {user_msg}{has_photo_tag}", flush=True)
 
             try:
-                # Query Google Hermes Engine
-                result = ask_hermes(user_msg)
+                if image_b64:
+                    image_bytes = base64.b64decode(image_b64)
+                    result = ask_hermes_with_image(
+                        image_bytes=image_bytes,
+                        mime_type=mime_type,
+                        user_message=user_msg
+                    )
+                else:
+                    # Query Google Hermes Engine with text only
+                    result = ask_hermes(user_msg)
+
                 raw_reply = result.get("reply", "")
                 model_used = result.get("model_used")
                 status = result.get("status", "success")

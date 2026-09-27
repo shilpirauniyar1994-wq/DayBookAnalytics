@@ -11,7 +11,8 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
@@ -215,6 +216,24 @@ async function startBridge() {
             if (msg.key.remoteJid === 'status@broadcast') continue;
             const isGroup = msg.key.remoteJid.endsWith('@g.us');
 
+            const isImage = !!(msg.message?.imageMessage);
+            let imageBase64 = null;
+            let mimeType = 'image/jpeg';
+
+            if (isImage) {
+                try {
+                    console.log(`[Bridge] Downloading incoming photo from ${pushName}...`);
+                    const imgBuffer = await downloadMediaMessage(msg, 'buffer', {});
+                    if (imgBuffer && imgBuffer.length > 0) {
+                        imageBase64 = imgBuffer.toString('base64');
+                        mimeType = msg.message?.imageMessage?.mimetype || 'image/jpeg';
+                        console.log(`[Bridge] Downloaded photo (${(imgBuffer.length / 1024).toFixed(1)} KB)`);
+                    }
+                } catch (err) {
+                    console.error('[Bridge] Error downloading image media:', err.message);
+                }
+            }
+
             const text = 
                 msg.message?.conversation ||
                 msg.message?.extendedTextMessage?.text ||
@@ -222,20 +241,21 @@ async function startBridge() {
                 '';
 
             const trimmedText = text.trim();
-            if (!trimmedText) continue;
+            if (!trimmedText && !imageBase64) continue;
 
             const senderJid = msg.key.remoteJid;
             const pushName = msg.pushName || 'Customer';
             const senderPhone = senderJid.split('@')[0];
 
-            console.log(`[Bridge] Incoming from ${pushName} (+${senderPhone}): "${trimmedText}"`);
+            const displayMsg = trimmedText || (imageBase64 ? '[Sent a photo]' : '');
+            console.log(`[Bridge] Incoming from ${pushName} (+${senderPhone}): "${displayMsg}"`);
 
             logMessage({
                 direction: 'in',
                 from: senderPhone,
                 name: pushName,
                 is_group: isGroup,
-                text: trimmedText
+                text: displayMsg
             });
 
             try {
@@ -245,10 +265,12 @@ async function startBridge() {
             try {
                 const response = await axios.post(PYTHON_API_URL, {
                     message: trimmedText,
+                    image_base64: imageBase64,
+                    mime_type: mimeType,
                     sender: senderPhone,
                     push_name: pushName
                 }, {
-                    timeout: 45000,
+                    timeout: 60000,
                     headers: { 'Content-Type': 'application/json' }
                 });
 
