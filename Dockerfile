@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Prevent Python from buffering stdout/stderr and disable debconf prompts
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    PORT=7860
+    PORT=8501
 
 # Install system dependencies, curl, and Node.js 20
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Create Hugging Face standard non-root user (UID 1000)
+# Create standard non-root user (UID 1000)
 RUN useradd -m -u 1000 user
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH
@@ -38,8 +38,8 @@ COPY --chown=user:user . .
 # Ensure start script has executable permissions
 RUN chmod +x start.sh
 
-# Expose default Hugging Face Spaces port
-EXPOSE 7860
+# Expose ports for web dashboard
+EXPOSE 8501 8080 7860
 
 # Switch to non-root user
 USER user
