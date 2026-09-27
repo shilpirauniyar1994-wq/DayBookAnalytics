@@ -11,7 +11,7 @@ import re
 import base64
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import List, Dict, Any, Tuple
-from google_hermes_engine import ask_hermes, ask_hermes_with_image
+from google_hermes_engine import ask_hermes, is_photo_requested
 
 try:
     if hasattr(sys.stdout, "reconfigure"):
@@ -116,29 +116,19 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                 return
 
             user_msg = str(payload.get('message', '')).strip()
-            image_b64 = payload.get('image_base64')
-            mime_type = payload.get('mime_type', 'image/jpeg')
             sender = payload.get('sender', 'Unknown')
             push_name = payload.get('push_name', 'Customer')
 
-            if not user_msg and not image_b64:
-                self._send_json(400, {"error": "Message or image_base64 parameter is required"})
+            if not user_msg:
+                self._send_json(400, {"error": "Message parameter is required"})
                 return
 
-            has_photo_tag = " [PHOTO ATTACHED]" if image_b64 else ""
-            print(f"[API Server] Incoming message from {push_name} ({sender}): {user_msg}{has_photo_tag}", flush=True)
+            photo_wanted = is_photo_requested(user_msg)
+            print(f"[API Server] Incoming message from {push_name} ({sender}): {user_msg} [Photo Requested: {photo_wanted}]", flush=True)
 
             try:
-                if image_b64:
-                    image_bytes = base64.b64decode(image_b64)
-                    result = ask_hermes_with_image(
-                        image_bytes=image_bytes,
-                        mime_type=mime_type,
-                        user_message=user_msg
-                    )
-                else:
-                    # Query Google Hermes Engine with text only
-                    result = ask_hermes(user_msg)
+                # Query Google Hermes Engine
+                result = ask_hermes(user_msg)
 
                 raw_reply = result.get("reply", "")
                 model_used = result.get("model_used")
@@ -147,12 +137,16 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                 # Format text and extract images
                 wa_text, extracted_images = format_markdown_for_whatsapp(raw_reply)
 
-                # Deduplicate and ensure all photo URLs from engine are present
-                existing_urls = {img["url"] for img in extracted_images}
-                for u in result.get("image_urls", []):
-                    if u not in existing_urls:
-                        extracted_images.append({"url": u, "caption": ""})
-                        existing_urls.add(u)
+                if not photo_wanted:
+                    # Enforce zero images when photos were not explicitly requested
+                    extracted_images = []
+                else:
+                    # Deduplicate and ensure all photo URLs from engine are present
+                    existing_urls = {img["url"] for img in extracted_images if img.get("url")}
+                    for u in result.get("image_urls", []):
+                        if u not in existing_urls:
+                            extracted_images.append({"url": u, "path": None, "caption": ""})
+                            existing_urls.add(u)
 
                 print(f"[API Server] Responded with {len(extracted_images)} images via {model_used}", flush=True)
 

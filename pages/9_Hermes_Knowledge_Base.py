@@ -232,81 +232,11 @@ if photo_filter:
 st.markdown(f"**Showing {len(filtered_df):,} matching products** (sorted by Current Stock descending):")
 
 # View Mode Switcher
-tab_visual, tab_chat, tab_grid, tab_table = st.tabs([
-    "📷 Visual Photo Matcher",
+tab_chat, tab_grid, tab_table = st.tabs([
     "💬 Chat with Google Hermes",
     "🖼️ Photo Cards Grid",
     "📋 Detailed Data Table"
 ])
-
-with tab_visual:
-    st.markdown("#### 📷 Visual Product Matcher (Photo Search & Identification)")
-    st.caption("Upload or snap a photo of any toy, box, or packaging. Google Gemini Vision scans printed model codes (e.g. 3398-1, 953Y), recognizes visual features, and matches against our 810+ catalog photos and DayBook inventory.")
-
-    from google_hermes_engine import ask_hermes_with_image
-
-    v_c1, v_c2 = st.columns([1.2, 1.8])
-
-    with v_c1:
-        st.markdown("**1. Provide Query Photo:**")
-        input_method = st.radio("Input Source:", ["📤 Upload Image File", "📸 Snap with Camera / Webcam"], horizontal=True, key="vis_input_method")
-        
-        uploaded_vis_file = None
-        if input_method == "📤 Upload Image File":
-            uploaded_vis_file = st.file_uploader(
-                "Upload a photo of the product or box:",
-                type=["jpg", "jpeg", "png", "webp"],
-                key="vis_uploader",
-                help="Accepts smartphone photos, box pictures, or toy photos."
-            )
-        else:
-            uploaded_vis_file = st.camera_input("Take a photo with camera / webcam:", key="vis_camera")
-
-        vis_notes = st.text_input("Optional question or notes:", placeholder="e.g. Do we have this in stock? What is the price?", key="vis_notes")
-        match_btn = st.button("🔍 Match Product from Photo", type="primary", use_container_width=True, disabled=(uploaded_vis_file is None))
-
-        if uploaded_vis_file:
-            st.image(uploaded_vis_file, caption="Query Photo (Your Input)", use_container_width=True)
-
-    with v_c2:
-        st.markdown("**2. AI Identification & Catalog Match:**")
-        if match_btn and uploaded_vis_file:
-            img_bytes = uploaded_vis_file.getvalue()
-            mime_type = uploaded_vis_file.type or "image/jpeg"
-
-            with st.spinner("Analyzing photo with Google Gemini Vision & searching inventory..."):
-                res = ask_hermes_with_image(
-                    image_bytes=img_bytes,
-                    mime_type=mime_type,
-                    user_message=vis_notes
-                )
-                st.session_state['last_visual_result'] = res
-                st.session_state['last_visual_img_bytes'] = img_bytes
-
-        if 'last_visual_result' in st.session_state:
-            res = st.session_state['last_visual_result']
-            if res.get("status") == "success":
-                st.success(f"✅ Identification Complete (Powered by {res.get('model_used')})")
-                st.markdown(res.get("reply", ""))
-
-                img_urls = res.get("image_urls", [])
-                if img_urls:
-                    st.markdown("---")
-                    st.markdown("##### 🖼️ Official Catalog Photos for Visual Verification:")
-                    cols = st.columns(min(3, len(img_urls)))
-                    for i, u in enumerate(img_urls):
-                        with cols[i % len(cols)]:
-                            if u.startswith("local://"):
-                                fname = u[8:]
-                                fpath = os.path.join(LOCAL_IMAGE_DIR, fname)
-                                if os.path.exists(fpath):
-                                    st.image(fpath, caption=f"Catalog Image: {fname}", use_container_width=True)
-                            else:
-                                st.image(u, caption=f"Catalog Image #{i+1}", use_container_width=True)
-            else:
-                st.error(res.get("reply", "Failed to identify product."))
-        else:
-            st.info("👈 Upload or snap a product photo on the left and click **'Match Product from Photo'** to identify the item, check stock, and compare with official catalog photos.")
 
 with tab_chat:
     st.markdown("#### 🤖 Live Assistant Simulator (Powered by Google Gemini & Primary Supabase)")

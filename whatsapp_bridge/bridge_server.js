@@ -11,8 +11,7 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion,
-    downloadMediaMessage
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
@@ -225,51 +224,33 @@ async function startBridge() {
                 msg.message?.viewOnceMessageV2?.message ||
                 msg.message;
 
-            const imageMsg = messageContent?.imageMessage;
-            const isImage = !!imageMsg;
-            let imageBase64 = null;
-            let mimeType = 'image/jpeg';
-
-            if (isImage) {
-                try {
-                    console.log(`[Bridge] Downloading incoming photo from ${pushName} (+${senderPhone})...`);
-                    const imgBuffer = await downloadMediaMessage(
-                        msg,
-                        'buffer',
-                        {},
-                        {
-                            logger: pino({ level: 'silent' }),
-                            reuploadRequest: sock.updateMediaMessage
-                        }
-                    );
-                    if (imgBuffer && imgBuffer.length > 0) {
-                        imageBase64 = imgBuffer.toString('base64');
-                        mimeType = imageMsg.mimetype || 'image/jpeg';
-                        console.log(`[Bridge] Downloaded photo (${(imgBuffer.length / 1024).toFixed(1)} KB, type: ${mimeType})`);
-                    }
-                } catch (err) {
-                    console.error('[Bridge] Error downloading image media:', err.message);
-                }
-            }
-
             const text = 
                 messageContent?.conversation ||
                 messageContent?.extendedTextMessage?.text ||
-                imageMsg?.caption ||
+                messageContent?.imageMessage?.caption ||
                 '';
 
             const trimmedText = text.trim();
-            if (!trimmedText && !imageBase64) continue;
+            if (!trimmedText) {
+                // If user sent a photo with no text, prompt them for product code or name
+                if (messageContent?.imageMessage) {
+                    try {
+                        await sock.sendMessage(senderJid, {
+                            text: "Hello! Please type the product name or code to check stock, wholesale price, or ask for photos (e.g. *'360-1 stock'*, *'RC car photo pathau'*)."
+                        }, { quoted: msg });
+                    } catch (_) {}
+                }
+                continue;
+            }
 
-            const displayMsg = trimmedText || (imageBase64 ? '[Sent a photo]' : '');
-            console.log(`[Bridge] Incoming from ${pushName} (+${senderPhone}): "${displayMsg}"`);
+            console.log(`[Bridge] Incoming from ${pushName} (+${senderPhone}): "${trimmedText}"`);
 
             logMessage({
                 direction: 'in',
                 from: senderPhone,
                 name: pushName,
                 is_group: isGroup,
-                text: displayMsg
+                text: trimmedText
             });
 
             try {
@@ -279,12 +260,10 @@ async function startBridge() {
             try {
                 const response = await axios.post(PYTHON_API_URL, {
                     message: trimmedText,
-                    image_base64: imageBase64,
-                    mime_type: mimeType,
                     sender: senderPhone,
                     push_name: pushName
                 }, {
-                    timeout: 90000,
+                    timeout: 45000,
                     headers: { 'Content-Type': 'application/json' }
                 });
 
