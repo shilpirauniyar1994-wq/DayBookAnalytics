@@ -4,21 +4,30 @@ import re
 import difflib
 from typing import Optional
 from dotenv import load_dotenv
-from openai import OpenAI
 from hermes_tools import search_products
 
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    raise ValueError("OPENROUTER_API_KEY is missing from your .env file!")
-
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
 
 MODEL_NAME = "upstage/solar-pro-3"
+
+_client = None
+
+def _get_openrouter_client():
+    global _client
+    if _client is None:
+        if not OPENROUTER_API_KEY:
+            raise ValueError("OPENROUTER_API_KEY is missing from your .env file!")
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("openai package is not installed. Run `pip install openai` to use hermes_agent.")
+        _client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+    return _client
 
 KNOWN_TAGS = {
     "RC", "DOLL", "GUN", "PATTA", "MELA", "CAR", "CLAY", "FACTORY",
@@ -120,7 +129,7 @@ def chat_with_hermes():
             messages.append({"role": "user", "content": user_input})
             print("\nHermes is searching...")
 
-            response = client.chat.completions.create(
+            response = _get_openrouter_client().chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 tools=TOOLS,
@@ -158,7 +167,7 @@ def chat_with_hermes():
                         "content": json.dumps(tool_result),
                     })
 
-                final_response = client.chat.completions.create(
+                final_response = _get_openrouter_client().chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages,
                 )

@@ -8,7 +8,6 @@ import os
 import sys
 import json
 import re
-import base64
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import List, Dict, Any, Tuple
 from google_hermes_engine import ask_hermes, is_photo_requested
@@ -78,15 +77,18 @@ def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, Any
 
 class HermesRequestHandler(BaseHTTPRequestHandler):
     def _send_json(self, status_code: int, data: Dict[str, Any]):
-        response_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
-        self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(response_bytes)))
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
-        self.wfile.write(response_bytes)
+        try:
+            response_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
+            self.send_response(status_code)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(response_bytes)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            self.end_headers()
+            self.wfile.write(response_bytes)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -156,14 +158,19 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                     "images": extracted_images,
                     "model_used": model_used
                 })
+            except (BrokenPipeError, ConnectionResetError):
+                print(f"[API Server] Client disconnected before response could be sent for {sender}", flush=True)
             except Exception as e:
                 print(f"[API Server] Error processing message: {e}", flush=True)
-                self._send_json(500, {
-                    "status": "error",
-                    "reply": "Sorry, an internal error occurred while querying inventory.",
-                    "images": [],
-                    "error": str(e)
-                })
+                try:
+                    self._send_json(500, {
+                        "status": "error",
+                        "reply": "Sorry, an internal error occurred while querying inventory.",
+                        "images": [],
+                        "error": str(e)
+                    })
+                except Exception:
+                    pass
         else:
             self._send_json(404, {"error": "Endpoint Not Found"})
 

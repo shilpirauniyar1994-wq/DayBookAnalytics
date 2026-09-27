@@ -7,17 +7,14 @@ and photo retrieval using Google Gemini's native tool calling.
 import os
 import re
 import time
-import json
 import difflib
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from hermes_tools import search_products, get_product_costing
 
 load_dotenv()
-
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 _client = None
 
