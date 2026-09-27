@@ -374,6 +374,13 @@ with tab_reconcile:
 
             # Batch Confirmation Form
             with st.form(f"reconcile_form_{active_voucher_no}_{len(reconciled_items)}"):
+                # Top Action Row
+                top_rc1, top_rc2 = st.columns([3.5, 1.5])
+                with top_rc1:
+                    st.caption("Review auto-detected matches. Adjust dropdowns as needed, then click **Save Confirmed Mappings**.")
+                with top_rc2:
+                    top_submit_reconcile = st.form_submit_button("💾 Save Confirmed Mappings", type="primary", use_container_width=True)
+
                 # Header row
                 h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1.4, 2.8, 1.4, 1.2, 1.2])
                 h1.markdown("**Invoice Item # & Description**")
@@ -499,13 +506,13 @@ with tab_reconcile:
                             'matched_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
                         })
 
-                submit_reconcile = st.form_submit_button(
+                bottom_submit_reconcile = st.form_submit_button(
                     f"💾 Save All {len(form_catalog_mappings)} Confirmed Mappings & Update Catalog RMB Prices",
                     type="primary",
                     use_container_width=True
                 )
 
-                if submit_reconcile:
+                if top_submit_reconcile or bottom_submit_reconcile:
                     if not form_catalog_mappings:
                         st.warning("No matched products selected to save.")
                     else:
@@ -586,6 +593,26 @@ with tab_db_items:
                 st.caption(f"Showing first 100 of {len(filtered_df)} items. Use the search bar above to narrow down results.")
 
             with st.form("manual_matching_form"):
+                # Top Action Row — Immediate visibility without scrolling
+                top_mc1, top_mc2 = st.columns([3.2, 1.8])
+                with top_mc1:
+                    st.markdown("##### 🔗 Item Matching & Catalog Sync")
+                    st.caption("Map supplier items to Tally products. Once selected, click **Save All Changes** to persist to database & PO Engine.")
+                with top_mc2:
+                    top_submit_btn = st.form_submit_button(
+                        "💾 Save All Changes",
+                        type="primary",
+                        use_container_width=True
+                    )
+
+                # Column Headers
+                th_it, th_price, th_tally, th_unlink = st.columns([2.5, 1.2, 3, 0.8])
+                th_it.markdown("**Supplier Item / Description**")
+                th_price.markdown("**Price (RMB) / Ctn**")
+                th_tally.markdown("**Matched Tally Product**")
+                th_unlink.markdown("**Action**")
+                st.markdown("<hr style='margin:4px 0px 10px 0px; border-color:#cbd5e1;'>", unsafe_allow_html=True)
+
                 updates_to_save = []
                 unmatches_to_save = []
 
@@ -611,16 +638,19 @@ with tab_db_items:
                         st.caption(f"{pcs} pcs/ctn")
 
                     with col_tally:
-                        options = ["-- Unmatched --"] + tally_prods
+                        options = ["-- Unmatched --"] + ([curr_tally] if curr_tally and curr_tally not in tally_prods else []) + tally_prods
                         default_idx = 0
-                        if curr_tally and curr_tally in tally_prods:
-                            default_idx = options.index(curr_tally)
+                        if curr_tally:
+                            try:
+                                default_idx = options.index(curr_tally)
+                            except ValueError:
+                                default_idx = 0
 
                         chosen_tally = st.selectbox(
                             f"Tally Product for {it_no}_{key}",
                             options=options,
                             index=default_idx,
-                            key=f"tally_sel_{key}",
+                            key=f"tally_sel_{idx}_{key}",
                             label_visibility="collapsed"
                         )
 
@@ -638,11 +668,13 @@ with tab_db_items:
                                 'match_type': m_type if m_type != 'Unmatched' else 'Manual Selection',
                                 'confidence': conf if conf > 0 else 1.0
                             })
+                        elif chosen_tally == "-- Unmatched --" and is_m:
+                            unmatches_to_save.append(key)
 
                     with col_unlink:
                         if is_m:
                             unlink_check = st.checkbox("Unlink", key=f"unlink_{key}", help="Remove Tally link for this item")
-                            if unlink_check:
+                            if unlink_check and key not in unmatches_to_save:
                                 unmatches_to_save.append(key)
                         else:
                             if conf > 0:
@@ -650,16 +682,30 @@ with tab_db_items:
 
                     st.markdown("<hr style='margin:4px 0px; border-color:#e2e8f0;'>", unsafe_allow_html=True)
 
-                submit_btn = st.form_submit_button("💾 Save Changes & Update Active Catalog", type="primary")
+                st.markdown("<br>", unsafe_allow_html=True)
+                b_col1, b_col2 = st.columns([3.2, 1.8])
+                with b_col1:
+                    st.caption("All saved mappings will update the database, active RMB catalog, and WhatsApp assistant.")
+                with b_col2:
+                    bottom_submit_btn = st.form_submit_button(
+                        "💾 Save All Changes & Update Active Catalog",
+                        type="primary",
+                        use_container_width=True
+                    )
 
-                if submit_btn:
+                if top_submit_btn or bottom_submit_btn:
                     if unmatches_to_save:
                         for uk in unmatches_to_save:
                             db.unmatch_commercial_item(uk)
                     if updates_to_save:
                         db.batch_update_commercial_matches(updates_to_save)
-                    st.success(f"Saved {len(updates_to_save)} match updates and {len(unmatches_to_save)} unlinks!")
-                    st.rerun()
+
+                    if not updates_to_save and not unmatches_to_save:
+                        st.info("ℹ️ No modifications were detected. Select a Tally product or unlink an item to save.")
+                    else:
+                        st.success(f"🎉 Successfully saved {len(updates_to_save)} match update(s) and {len(unmatches_to_save)} unlink(s)!")
+                        st.balloons()
+                        st.rerun()
 
 # ---------------------------------------------------------------------------
 # TAB 3: ACTIVE RMB PRICE CATALOG
