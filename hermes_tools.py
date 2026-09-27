@@ -20,6 +20,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_KEY")
 _client = None
 _catalog_cache = []
 _catalog_cache_time = 0
+_cost_cache: Dict[str, Dict[str, Any]] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes in-memory cache
 
 def get_client():
@@ -29,6 +30,49 @@ def get_client():
             raise ValueError("SUPABASE_KEY environment variable is not set!")
         _client = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _client
+
+def get_purchase_cost_for_products(product_names: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Fetches the latest purchase cost (rate in NPR, purchase date, supplier) from line_items
+    for a list of product names, using in-memory cache.
+    """
+    global _cost_cache
+    client = get_client()
+    needed = [p for p in product_names if p and p not in _cost_cache]
+    if needed:
+        try:
+            res = client.table("line_items").select(
+                "product_name, rate, date, party_name"
+            ).eq("voucher_category", "Purchase").in_(
+                "product_name", needed[:50]
+            ).order("date", desc=True).execute()
+
+            for r in res.data or []:
+                p = r.get("product_name", "").strip()
+                if p and p not in _cost_cache:
+                    _cost_cache[p] = {
+                        "cost_price": float(r["rate"]) if r.get("rate") is not None else None,
+                        "last_purchase_date": r.get("date"),
+                        "last_supplier": r.get("party_name")
+                    }
+        except Exception as e:
+            print(f"[Hermes Tools] Warning: Failed to fetch purchase cost: {e}")
+
+    return {p: _cost_cache.get(p, {}) for p in product_names}
+
+def enrich_items_with_costing(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Enriches product item dictionaries with latest purchase costing details."""
+    if not items:
+        return items
+    names = [it.get("product_name") for it in items if it.get("product_name")]
+    costs = get_purchase_cost_for_products(names)
+    for it in items:
+        name = it.get("product_name")
+        c_info = costs.get(name, {})
+        it["cost_price"] = c_info.get("cost_price")
+        it["last_purchase_date"] = c_info.get("last_purchase_date")
+        it["supplier"] = c_info.get("last_supplier")
+    return items
 
 def get_cached_catalog() -> List[Dict[str, Any]]:
     """Loads and caches all items from Supabase in memory for instant fuzzy search."""
@@ -213,6 +257,7 @@ def search_products(
         if has_photo_only:
             db_query = db_query.not_.is_("image_url", "null")
         items = db_query.order("current_stock", desc=True).limit(safe_limit).execute().data or []
+        items = enrich_items_with_costing(items)
         return {
             "searched_keyword": keyword,
             "count": len(items),
@@ -232,6 +277,7 @@ def search_products(
 
     # If direct SQL found matches, return them immediately
     if len(items) > 0:
+        items = enrich_items_with_costing(items)
         return {
             "searched_keyword": keyword,
             "count": len(items),
@@ -249,6 +295,7 @@ def search_products(
     )
 
     if len(nearest_items) > 0:
+        nearest_items = enrich_items_with_costing(nearest_items)
         return {
             "searched_keyword": keyword,
             "count": len(nearest_items),
@@ -265,6 +312,53 @@ def search_products(
         "items": [],
         "is_nearest_match": False,
         "suggested_tags": suggested_tags
+    }
+
+def get_product_costing(product_name: str) -> Dict[str, Any]:
+    """
+    Look up confidential costing, purchase cost history, and China factory RMB price
+    for a specific product or code (e.g. '360-1', '298-1 Gun', 'Clay', 'BF430').
+    Call this tool whenever the user explicitly asks for 'cost', 'costing', 'purchase rate',
+    'landing cost', 'kharcha', 'factory price', or 'RMB price'.
+
+    Args:
+        product_name: Name or code of the item to get costing for
+    """
+    if not product_name or str(product_name).strip() in ["", "none", "null"]:
+        return {"error": "Please provide a product name or item code to check costing."}
+
+    k = str(product_name).strip()
+    # Find matching products (even if out of stock, since costing can be asked for historical items)
+    matched_items = find_nearest_products(query=k, limit=5, in_stock_only=False)
+    if not matched_items:
+        return {
+            "searched_keyword": k,
+            "found": False,
+            "message": f"No product matching '{k}' was found in the catalog."
+        }
+
+    matched_items = enrich_items_with_costing(matched_items)
+
+    formatted_results = []
+    for item in matched_items:
+        formatted_results.append({
+            "product_name": item.get("product_name"),
+            "current_stock_pcs": item.get("current_stock", 0.0),
+            "wholesale_selling_price_rs": item.get("selling_price", 0.0),
+            "purchase_cost_rs": item.get("cost_price"),
+            "last_purchase_date": item.get("last_purchase_date"),
+            "supplier": item.get("supplier"),
+            "china_factory_cost_rmb": item.get("rmb_price"),
+            "image_url": item.get("image_url")
+        })
+
+    return {
+        "searched_keyword": k,
+        "found": True,
+        "count": len(formatted_results),
+        "primary_item": formatted_results[0],
+        "other_matches": formatted_results[1:],
+        "is_nearest_match": normalize_text(k) != normalize_text(formatted_results[0]["product_name"])
     }
 
 def get_tag_suggestions(misspelled_tag: str, limit: int = 6) -> List[Dict[str, Any]]:
