@@ -50,6 +50,59 @@ def extract_model_or_code(text: str) -> Optional[str]:
             return val
     return None
 
+def parse_loaded_list_mark(mark_text: str) -> Tuple[str, str, Optional[str], Optional[str], Optional[str]]:
+    """
+    Parses a shipping carton mark (e.g. 'VG-2 NO. ball CTN NO: G16-G20 QTY: 200PCS')
+    into:
+      - norm_name: clean normalized item name ('2 no ball')
+      - raw_item: item substring before delimiters ('2 NO. ball')
+      - model_no: supplier model code if present ('BL35940', '886-1', etc.)
+      - ctn_range: carton range ('G16-G20')
+      - qty_str: quantity string ('200PCS')
+    """
+    text = str(mark_text or '').strip()
+    clean = re.sub(r'^VG[\s\-]*', '', text, flags=re.IGNORECASE).strip()
+
+    # Extract Model NO
+    model_m = re.search(r'Model\s*NO[.:\s]+([A-Za-z0-9\-_]+)', clean, re.IGNORECASE)
+    model_no = model_m.group(1).strip() if model_m else None
+
+    # Extract Carton Range
+    ctn_m = re.search(r'CTN\s*NO[.:\s]+([A-Za-z0-9\-_]+(?:\s*-\s*[A-Za-z0-9\-_]+)?)', clean, re.IGNORECASE)
+    ctn_range = ctn_m.group(1).strip() if ctn_m else None
+
+    # Extract Qty per ctn
+    qty_m = re.search(r'QTY\s*[:\s]*([0-9]+(?:\.[0-9]+)?\s*[A-Za-z]+)', clean, re.IGNORECASE)
+    qty_str = qty_m.group(1).strip() if qty_m else None
+
+    # Delimiters that terminate the item name
+    delimiters = [
+        r'\bCTN\s*NO',
+        r'\bModel\s*NO',
+        r'\bpacking\s*[-:]?\s*\d+',
+        r'\bQTY\s*:',
+        r'\bCOLOR[S]?\s*:',
+        r'\bMIX\s+COLORS\b'
+    ]
+    cut_pos = len(clean)
+    for delim in delimiters:
+        m = re.search(delim, clean, re.IGNORECASE)
+        if m and m.start() < cut_pos:
+            cut_pos = m.start()
+
+    raw_item = clean[:cut_pos].strip()
+    raw_item = re.sub(r'[\s\-:;,]+$', '', raw_item).strip()
+
+    if not raw_item and model_no:
+        raw_item = model_no
+
+    # Normalize name: '2 NO. ball' -> '2 no ball'
+    norm_name = re.sub(r'\bNO\b\.?', 'no', raw_item, flags=re.IGNORECASE)
+    norm_name = re.sub(r'\(\s*\d+\s*-\s*\d+\s*\)', '', norm_name)
+    norm_name = re.sub(r'\s+', ' ', norm_name).strip()
+
+    return norm_name, raw_item, model_no, ctn_range, qty_str
+
 def get_unprocessed_invoices(folder: str = "commercial invoices") -> List[str]:
     """
     Return list of Excel invoice filenames in the folder that have not been archived yet.
@@ -185,6 +238,134 @@ def parse_commercial_invoice(
                     continue
 
                 # ---------------------------------------------------------------------
+                # FORMAT 2 (Priority): Container Loaded List / Shipping Mark format
+                # Identified if any of the top 5 rows has MARK, and (CTN or 品名 or PCS)
+                # ---------------------------------------------------------------------
+                vg_row_idx = None
+                for r in range(min(5, len(df))):
+                    r_str = ' '.join([str(x).lower() for x in df.iloc[r] if pd.notna(x)])
+                    if 'mark' in r_str and ('ctn' in r_str or '品名' in r_str or 'pcs' in r_str):
+                        vg_row_idx = r
+                        break
+
+                if vg_row_idx is not None:
+                    headers = [str(x).strip().lower() for x in df.iloc[vg_row_idx]]
+                    col_mark = 0
+                    col_ctn_no = None
+                    col_cname = None
+                    col_desc = None
+                    col_ctn = None
+                    col_pcs = None
+                    col_tqty = None
+                    col_price = None
+                    col_amt = None
+
+                    for c, h in enumerate(headers):
+                        if h == 'mark':
+                            col_mark = c
+                        elif h in ('ctn no.', 'ctn no', 'ctn_no', 'ctn#', 'carton no', 'carton no.') or ('ctn' in h and 'no' in h and 'per' not in h and 'g.w' not in h and 'cbm' not in h):
+                            col_ctn_no = c
+                        elif '品名' in h:
+                            col_cname = c
+                        elif 'desc' in h:
+                            col_desc = c
+                        elif h in ('ctn', 'ctns', '箱数'):
+                            col_ctn = c
+                        elif 'pcs' in h and 'ctn' in h:
+                            col_pcs = c
+                        elif 't/qty' in h or 'total qty' in h or '数量' in h:
+                            col_tqty = c
+                        elif h in ('price', 'unit price', '单价') or ('price' in h and 'amt' not in h):
+                            col_price = c
+                        elif 'amt' in h or 'amount' in h or '金额' in h:
+                            col_amt = c
+
+                    for r in range(vg_row_idx + 1, len(df)):
+                        row = df.iloc[r]
+                        raw_mark = str(row[col_mark]).strip() if pd.notna(row[col_mark]) else ''
+                        if not raw_mark or raw_mark.lower().startswith(('total', 'grand total', 'nan')):
+                            continue
+
+                        norm_name, raw_item, model_no, ctn_range, qty_str = parse_loaded_list_mark(raw_mark)
+                        ctn_from_col = str(row[col_ctn_no]).strip() if col_ctn_no is not None and col_ctn_no < len(row) and pd.notna(row[col_ctn_no]) else ''
+                        cname_val = str(row[col_cname]).strip() if col_cname is not None and col_cname < len(row) and pd.notna(row[col_cname]) else ''
+                        desc_val = str(row[col_desc]).strip() if col_desc is not None and col_desc < len(row) and pd.notna(row[col_desc]) else ''
+
+                        final_ctn = ctn_from_col or ctn_range or ""
+
+                        pcs_val = 0
+                        if col_pcs is not None and col_pcs < len(row) and pd.notna(row[col_pcs]):
+                            try:
+                                pcs_val = int(float(re.sub(r'[^\d.]', '', str(row[col_pcs]))))
+                            except Exception:
+                                pcs_val = 0
+
+                        ctn_val = 0
+                        if col_ctn is not None and col_ctn < len(row) and pd.notna(row[col_ctn]):
+                            try:
+                                ctn_val = int(float(re.sub(r'[^\d.]', '', str(row[col_ctn]))))
+                            except Exception:
+                                ctn_val = 0
+
+                        raw_p = 0.0
+                        if col_price is not None and col_price < len(row) and pd.notna(row[col_price]):
+                            try:
+                                raw_p = float(re.sub(r'[^\d.]', '', str(row[col_price])))
+                            except Exception:
+                                raw_p = 0.0
+
+                        amt_val = 0.0
+                        if col_amt is not None and col_amt < len(row) and pd.notna(row[col_amt]):
+                            try:
+                                amt_val = float(re.sub(r'[^\d.]', '', str(row[col_amt])))
+                            except Exception:
+                                amt_val = 0.0
+
+                        tqty_val = 0
+                        if col_tqty is not None and col_tqty < len(row) and pd.notna(row[col_tqty]):
+                            try:
+                                tqty_val = int(float(re.sub(r'[^\d.]', '', str(row[col_tqty]))))
+                            except Exception:
+                                tqty_val = 0
+                        elif pcs_val > 0 and ctn_val > 0:
+                            tqty_val = pcs_val * ctn_val
+
+                        unit_price = 0.0
+                        if raw_p > 0:
+                            if raw_p > 35 and pcs_val > 5:
+                                unit_price = round(raw_p / pcs_val, 3)
+                            else:
+                                unit_price = round(raw_p, 3)
+                        elif amt_val > 0 and tqty_val > 0:
+                            unit_price = round(amt_val / tqty_val, 3)
+
+                        if unit_price <= 0:
+                            continue
+
+                        extracted_items.append({
+                            'supplier_name': supplier_name,
+                            'invoice_file': filename,
+                            'sheet_name': sheet_name,
+                            'supplier_item_no': model_no or norm_name,
+                            'supplier_desc': norm_name,
+                            'rmb_price': unit_price,
+                            'pcs_per_ctn': pcs_val,
+                            'invoiced_ctns': ctn_val,
+                            'invoiced_qty': int(tqty_val),
+                            'amount_rmb': round(amt_val, 2),
+                            'ctn_range': final_ctn,
+                            'chinese_name': cname_val or desc_val,
+                            'doc_no': meta.get('doc_no', ''),
+                            'container_no': meta.get('container_no', ''),
+                            'invoice_date': meta.get('date', ''),
+                            'raw_label': raw_mark
+                        })
+
+                    if extracted_items:
+                        break
+                    continue
+
+                # ---------------------------------------------------------------------
                 # FORMAT 1: Flexible Tabular format (Headers up to row 25: ITEM NO, Description, Price RMB, PCS/CTN, Total Quantity)
                 # ---------------------------------------------------------------------
                 header_row_idx = custom_header_row
@@ -192,7 +373,7 @@ def parse_commercial_invoice(
                     for r in range(min(25, len(df))):
                         row_vals = [str(x).strip().lower() for x in df.iloc[r] if pd.notna(x)]
                         row_str = ' '.join(row_vals)
-                        has_item = any(k in row_str for k in ['item', 'model', 'art', 'code', 'mark', '货号', '型号', '款号', '品名', 'description', 'particulars', 'goods'])
+                        has_item = any(k in row_str for k in ['item', 'model', 'art', 'code', '货号', '型号', '款号', '品名', 'description', 'particulars', 'goods'])
                         has_price = any(k in row_str for k in ['price', 'rmb', 'cny', 'unit', 'rate', '单价', '价格', 'amt', 'amount', '金额', '¥'])
                         has_qty = any(k in row_str for k in ['pcs', 'ctn', 'qty', 'quantity', '箱', '数量', 't/qty', 'ctns'])
                         if (has_item and (has_price or has_qty)) or ('item no' in row_str and 'price' in row_str):
@@ -336,120 +517,7 @@ def parse_commercial_invoice(
                             break
                         continue
 
-                # ---------------------------------------------------------------------
-                # FORMAT 2: VG Loaded List / Mark format (Row 0 or 1 has MARK, CTN NO., 品名, DESCRIPTION, CTN, PCS /CTN, T/QTY, PRICE, etc.)
-                # ---------------------------------------------------------------------
-                r0_str = ' '.join([str(x).lower() for x in df.iloc[0] if pd.notna(x)])
-                r1_str = ' '.join([str(x).lower() for x in df.iloc[1] if pd.notna(x)]) if len(df) > 1 else ''
-                vg_row_idx = 0 if 'mark' in r0_str else (1 if 'mark' in r1_str else None)
 
-                if vg_row_idx is not None:
-                    col_mark = 0
-                    col_pcs = None
-                    col_price = None
-                    col_amt = None
-                    col_tqty = None
-                    col_ctn = None
-
-                    for c_idx, val in enumerate(df.iloc[vg_row_idx]):
-                        v_str = str(val).strip().lower()
-                        if 'pcs' in v_str and 'ctn' in v_str:
-                            col_pcs = c_idx
-                        elif v_str in ('price', 'unit price', 'price(rmb)', 'unitprice', '单价'):
-                            col_price = c_idx
-                        elif 'amt' in v_str or 'amount' in v_str or '金额' in v_str:
-                            col_amt = c_idx
-                        elif 't/qty' in v_str or 'total qty' in v_str or '数量' in v_str:
-                            col_tqty = c_idx
-                        elif v_str in ('ctn', 'ctns', '箱数'):
-                            col_ctn = c_idx
-
-                    for r in range(vg_row_idx + 1, len(df)):
-                        row = df.iloc[r]
-                        raw_mark = str(row[col_mark]).strip() if pd.notna(row[col_mark]) else ''
-                        if not raw_mark or raw_mark.lower().startswith(('total', 'grand total', 'nan')):
-                            continue
-
-                        # Clean item description from MARK line (strip carton box info and prefix)
-                        clean_desc = raw_mark.split('CTN NO')[0].strip()
-                        clean_desc = re.sub(r'^VG[-\s]*', '', clean_desc, flags=re.IGNORECASE).strip()
-                        if not clean_desc or clean_desc.lower() in ('total', 'nan'):
-                            continue
-
-                        # Extract model code if available; otherwise use clean name as code
-                        item_code = ''
-                        m = re.search(r'\b[A-Za-z0-9]{2,6}-[A-Za-z0-9]{1,4}\b', clean_desc)
-                        if m and not re.match(r'^[A-Z]\d+-[A-Z]\d+$', m.group(0), re.IGNORECASE):
-                            item_code = m.group(0).strip()
-                        else:
-                            item_code = clean_desc[:25].strip()
-
-                        pcs_val = 0
-                        if col_pcs is not None and col_pcs < len(row) and pd.notna(row[col_pcs]):
-                            try:
-                                pcs_val = int(float(re.sub(r'[^\d.]', '', str(row[col_pcs]))))
-                            except Exception:
-                                pcs_val = 0
-
-                        ctn_val = 0
-                        if col_ctn is not None and col_ctn < len(row) and pd.notna(row[col_ctn]):
-                            try:
-                                ctn_val = int(float(re.sub(r'[^\d.]', '', str(row[col_ctn]))))
-                            except Exception:
-                                ctn_val = 0
-
-                        raw_p = 0.0
-                        if col_price is not None and col_price < len(row) and pd.notna(row[col_price]):
-                            try:
-                                raw_p = float(re.sub(r'[^\d.]', '', str(row[col_price])))
-                            except Exception:
-                                raw_p = 0.0
-
-                        amt_val = 0.0
-                        if col_amt is not None and col_amt < len(row) and pd.notna(row[col_amt]):
-                            try:
-                                amt_val = float(re.sub(r'[^\d.]', '', str(row[col_amt])))
-                            except Exception:
-                                amt_val = 0.0
-
-                        tqty_val = 0.0
-                        if col_tqty is not None and col_tqty < len(row) and pd.notna(row[col_tqty]):
-                            try:
-                                tqty_val = float(re.sub(r'[^\d.]', '', str(row[col_tqty])))
-                            except Exception:
-                                tqty_val = 0.0
-
-                        unit_price = 0.0
-                        if raw_p > 0:
-                            if raw_p > 35 and pcs_val > 5:
-                                # Carton price entered in spreadsheet: compute per-piece unit price
-                                unit_price = round(raw_p / pcs_val, 3)
-                            else:
-                                unit_price = round(raw_p, 3)
-                        elif amt_val > 0 and tqty_val > 0:
-                            unit_price = round(amt_val / tqty_val, 3)
-
-                        if unit_price <= 0:
-                            continue
-
-                        extracted_items.append({
-                            'supplier_name': supplier_name,
-                            'invoice_file': filename,
-                            'sheet_name': sheet_name,
-                            'supplier_item_no': item_code,
-                            'supplier_desc': clean_desc,
-                            'rmb_price': unit_price,
-                            'pcs_per_ctn': pcs_val,
-                            'invoiced_ctns': ctn_val,
-                            'invoiced_qty': int(tqty_val),
-                            'amount_rmb': round(amt_val, 2),
-                            'doc_no': meta.get('doc_no', ''),
-                            'container_no': meta.get('container_no', ''),
-                            'invoice_date': meta.get('date', ''),
-                            'raw_label': raw_mark
-                        })
-                    if extracted_items:
-                        break
 
     except Exception as e:
         print(f"Error parsing invoice {filepath}: {e}")

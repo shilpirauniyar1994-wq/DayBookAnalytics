@@ -600,6 +600,7 @@ def upsert_commercial_invoice_items(items: List[Dict[str, Any]]) -> Dict[str, in
         v_no = str(it.get('voucher_no', ''))
         multiplier = float(it.get('landed_multiplier', 0.0))
         src = it.get('source_invoice') or it.get('invoice_file', '')
+        ctn_range = str(it.get('ctn_range', '')).strip()
 
         if key in existing_dict:
             # Item exists: check if price changed
@@ -626,6 +627,8 @@ def upsert_commercial_invoice_items(items: List[Dict[str, Any]]) -> Dict[str, in
                 existing_dict[key]['voucher_no'] = v_no
             if multiplier > 0:
                 existing_dict[key]['landed_multiplier'] = multiplier
+            if ctn_range:
+                existing_dict[key]['ctn_range'] = ctn_range
             existing_dict[key]['source_invoice'] = src
             existing_dict[key]['extracted_at'] = now_str
 
@@ -651,6 +654,7 @@ def upsert_commercial_invoice_items(items: List[Dict[str, Any]]) -> Dict[str, in
                 'invoiced_qty': new_qty,
                 'voucher_no': v_no,
                 'landed_multiplier': multiplier,
+                'ctn_range': ctn_range,
                 'source_invoice': src,
                 'extracted_at': now_str,
                 'tally_product_name': it.get('matched_product_name'),

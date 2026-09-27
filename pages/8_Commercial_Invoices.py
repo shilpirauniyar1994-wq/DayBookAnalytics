@@ -56,9 +56,9 @@ c_upload, c_ingest = st.columns([3, 2])
 
 with c_upload:
     uploaded_file = st.file_uploader(
-        "📤 Upload New Commercial Invoice (Excel .xlsx / .xls)",
+        "📤 Upload Commercial Invoice or Container Loaded List (Excel .xlsx / .xls)",
         type=["xlsx", "xls"],
-        help="Upload a supplier commercial invoice to automatically parse, pair with a DayBook Purchase Voucher, and extract RMB prices."
+        help="Upload a supplier commercial invoice or container loaded list (e.g. VG Loaded List) to automatically parse, extract clean item names, carton ranges, and RMB prices."
     )
     if uploaded_file is not None:
         save_path = os.path.join(folder, uploaded_file.name)
@@ -393,7 +393,8 @@ with tab_reconcile:
                     conf = it.get('confidence', 0.0)
 
                     with c1:
-                        st.markdown(f"**{it_no}**")
+                        ctn_badge = f" `📦 {it['ctn_range']}`" if it.get('ctn_range') else ""
+                        st.markdown(f"**{it_no}**{ctn_badge}")
                         st.caption(f"{it_desc[:42]}{'...' if len(it_desc) > 42 else ''}")
 
                     with c2:
