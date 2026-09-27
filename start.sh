@@ -19,4 +19,5 @@ exec python3 -m streamlit run app.py \
     --server.address 0.0.0.0 \
     --server.enableCORS false \
     --server.enableXsrfProtection false \
-    --server.headless true
+    --server.headless true \
+    --server.maxUploadSize 500

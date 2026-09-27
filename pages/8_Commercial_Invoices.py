@@ -62,12 +62,28 @@ with c_upload:
     )
     if uploaded_file is not None:
         save_path = os.path.join(folder, uploaded_file.name)
-        if not os.path.exists(save_path):
+        upload_sig = f"{uploaded_file.name}_{uploaded_file.size}"
+        
+        # Check if new upload or file is missing on disk
+        if st.session_state.get('last_upload_sig') != upload_sig or not os.path.exists(save_path):
             with open(save_path, "wb") as f_out:
                 f_out.write(uploaded_file.getbuffer())
-            st.success(f"Uploaded `{uploaded_file.name}` to `{folder}/`!")
+            st.session_state['last_upload_sig'] = upload_sig
             st.session_state['selected_invoice_file'] = uploaded_file.name
+            st.toast(f"Saved {uploaded_file.name} successfully!", icon="✅")
+            st.success(f"✅ Uploaded `{uploaded_file.name}` ({uploaded_file.size / 1024:.1f} KB) to `{folder}/`! Ready for reconciliation below.")
             st.rerun()
+        else:
+            col_u1, col_u2 = st.columns([3, 1])
+            with col_u1:
+                st.caption(f"📁 Loaded `{uploaded_file.name}` ({uploaded_file.size / 1024:.1f} KB). Ready for reconciliation below.")
+            with col_u2:
+                if st.button("🔄 Overwrite File", key="force_resave_btn", help="Re-save this uploaded file to disk"):
+                    with open(save_path, "wb") as f_out:
+                        f_out.write(uploaded_file.getbuffer())
+                    st.session_state['selected_invoice_file'] = uploaded_file.name
+                    st.success(f"Overwrote `{uploaded_file.name}`")
+                    st.rerun()
 
 with c_ingest:
     st.markdown("**Batch Ingestion Pipeline**")
@@ -165,14 +181,79 @@ with tab_reconcile:
             help="Choose an invoice spreadsheet to inspect and reconcile against DayBook Purchase Vouchers"
         )
         selected_file_path = file_path_map[selected_label]
+        file_key_safe = re.sub(r'[^a-zA-Z0-9_]', '_', selected_label)
+        custom_sheet = st.session_state.get(f"custom_sheet_{file_key_safe}")
+        custom_row = st.session_state.get(f"custom_row_{file_key_safe}")
 
         # Parse invoice items and extract metadata
-        invoice_items = invoice_matcher.parse_commercial_invoice(selected_file_path)
+        invoice_items = invoice_matcher.parse_commercial_invoice(
+            selected_file_path,
+            target_sheet=custom_sheet,
+            custom_header_row=custom_row
+        )
         meta = invoice_matcher.extract_invoice_metadata(selected_file_path)
 
         if not invoice_items:
-            st.error(f"Could not extract items from `{os.path.basename(selected_file_path)}`. Please ensure the file contains valid headers.")
+            st.error(f"⚠️ Could not automatically extract items and RMB prices from `{os.path.basename(selected_file_path)}`.")
+            st.info("The spreadsheet may use custom sheet names or non-standard header rows. Inspect the sheet below and specify the header row:")
+            try:
+                with pd.ExcelFile(selected_file_path) as xl:
+                    all_sheets = xl.sheet_names
+                    sel_sheet_idx = all_sheets.index(custom_sheet) if custom_sheet in all_sheets else 0
+
+                    col_s1, col_s2, col_s3 = st.columns([2, 1.5, 1.5])
+                    with col_s1:
+                        chosen_sheet = st.selectbox(
+                            "Select Sheet Name:",
+                            options=all_sheets,
+                            index=sel_sheet_idx,
+                            key=f"ui_sheet_{file_key_safe}"
+                        )
+
+                    df_preview = xl.parse(sheet_name=chosen_sheet, header=None)
+
+                    with col_s2:
+                        chosen_row = st.number_input(
+                            "Header Row (0-indexed):",
+                            min_value=0,
+                            max_value=max(0, len(df_preview) - 1),
+                            value=int(custom_row) if custom_row is not None else 0,
+                            key=f"ui_row_{file_key_safe}",
+                            help="Row number where Item No, Description, and Price headers are located (Row 1 = 0, Row 2 = 1, etc.)"
+                        )
+
+                    with col_s3:
+                        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                        if st.button("🔄 Re-parse Sheet", type="primary", key=f"apply_{file_key_safe}"):
+                            st.session_state[f"custom_sheet_{file_key_safe}"] = chosen_sheet
+                            st.session_state[f"custom_row_{file_key_safe}"] = int(chosen_row)
+                            st.rerun()
+
+                    st.markdown("**Spreadsheet Preview (First 15 Rows):**")
+                    st.dataframe(df_preview.head(15), use_container_width=True)
+            except Exception as exc:
+                st.error(f"Error inspecting spreadsheet: {exc}")
         else:
+            with st.expander("⚙️ Advanced: Sheet & Header Settings", expanded=False):
+                try:
+                    with pd.ExcelFile(selected_file_path) as xl:
+                        all_sheets = xl.sheet_names
+                        sel_sheet_idx = all_sheets.index(custom_sheet) if custom_sheet in all_sheets else 0
+                        col_s1, col_s2, col_s3 = st.columns([2, 1.5, 1.5])
+                        with col_s1:
+                            chosen_sheet = st.selectbox("Sheet:", all_sheets, index=sel_sheet_idx, key=f"adv_sheet_{file_key_safe}")
+                        with col_s2:
+                            df_adv = xl.parse(sheet_name=chosen_sheet, header=None)
+                            chosen_row = st.number_input("Header Row:", min_value=0, max_value=max(0, min(30, len(df_adv) - 1)), value=int(custom_row) if custom_row is not None else 0, key=f"adv_row_{file_key_safe}")
+                        with col_s3:
+                            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                            if st.button("🔄 Re-parse", key=f"adv_apply_{file_key_safe}"):
+                                st.session_state[f"custom_sheet_{file_key_safe}"] = chosen_sheet
+                                st.session_state[f"custom_row_{file_key_safe}"] = int(chosen_row)
+                                st.rerun()
+                except Exception:
+                    pass
+
             # Stage 1: Macro Matching (Find Candidate Vouchers)
             candidates = invoice_matcher.find_candidate_purchase_vouchers(invoice_items, metadata=meta, limit=6)
 
