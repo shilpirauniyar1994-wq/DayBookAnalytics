@@ -538,7 +538,8 @@ def get_commercial_invoice_items() -> pd.DataFrame:
 
     cols = [
         'id', 'item_key', 'supplier_name', 'supplier_item_no', 'supplier_desc',
-        'rmb_price', 'pcs_per_ctn', 'source_invoice', 'extracted_at',
+        'rmb_price', 'pcs_per_ctn', 'invoiced_qty', 'voucher_no', 'landed_multiplier',
+        'source_invoice', 'extracted_at',
         'tally_product_name', 'is_matched', 'match_confidence', 'match_type', 'matched_at'
     ]
     return pd.DataFrame(columns=cols)
@@ -595,6 +596,9 @@ def upsert_commercial_invoice_items(items: List[Dict[str, Any]]) -> Dict[str, in
         key = make_item_key(s_name, it_no, it_desc)
         new_p = round(float(it.get('rmb_price', 0.0)), 3)
         new_pcs = int(it.get('pcs_per_ctn', 0))
+        new_qty = int(it.get('invoiced_qty', 0))
+        v_no = str(it.get('voucher_no', ''))
+        multiplier = float(it.get('landed_multiplier', 0.0))
         src = it.get('source_invoice') or it.get('invoice_file', '')
 
         if key in existing_dict:
@@ -616,6 +620,12 @@ def upsert_commercial_invoice_items(items: List[Dict[str, Any]]) -> Dict[str, in
             # Update latest price and carton size
             existing_dict[key]['rmb_price'] = new_p
             existing_dict[key]['pcs_per_ctn'] = new_pcs if new_pcs > 0 else existing_dict[key].get('pcs_per_ctn', 0)
+            if new_qty > 0:
+                existing_dict[key]['invoiced_qty'] = new_qty
+            if v_no:
+                existing_dict[key]['voucher_no'] = v_no
+            if multiplier > 0:
+                existing_dict[key]['landed_multiplier'] = multiplier
             existing_dict[key]['source_invoice'] = src
             existing_dict[key]['extracted_at'] = now_str
 
@@ -638,6 +648,9 @@ def upsert_commercial_invoice_items(items: List[Dict[str, Any]]) -> Dict[str, in
                 'supplier_desc': it_desc,
                 'rmb_price': new_p,
                 'pcs_per_ctn': new_pcs,
+                'invoiced_qty': new_qty,
+                'voucher_no': v_no,
+                'landed_multiplier': multiplier,
                 'source_invoice': src,
                 'extracted_at': now_str,
                 'tally_product_name': it.get('matched_product_name'),
@@ -862,8 +875,49 @@ def get_product_supplier_mappings() -> pd.DataFrame:
     cols = ['product_name', 'supplier_name', 'supplier_item_no', 'supplier_desc', 'rmb_price', 'pcs_per_ctn', 'invoice_file', 'matched_at']
     return pd.DataFrame(columns=cols)
 
+def sync_product_rmb_to_hermes(product_name: str, rmb_price: float) -> bool:
+    """
+    Directly propagate confirmed RMB price to hermes_items in Primary Supabase
+    and local cache so the WhatsApp assistant and Purchase Order engine immediately
+    quote the updated RMB price.
+    """
+    if not product_name or float(rmb_price or 0.0) <= 0:
+        return False
+
+    p_clean = str(product_name).strip()
+    price_val = round(float(rmb_price), 3)
+
+    client = get_client()
+    if client is not None and is_supabase_configured():
+        try:
+            client.table('hermes_items').update({
+                'rmb_price': price_val
+            }).eq('product_name', p_clean).execute()
+        except Exception as e:
+            print(f"[db] Warning syncing rmb_price to Supabase hermes_items: {e}")
+
+    # Also update local parquet/csv cache if present
+    for cache_p in [os.path.join("data", "hermes_items.parquet"), os.path.join("data", "hermes_items.csv")]:
+        if os.path.exists(cache_p):
+            try:
+                if cache_p.endswith('.parquet'):
+                    h_df = pd.read_parquet(cache_p)
+                else:
+                    h_df = pd.read_csv(cache_p)
+                if not h_df.empty and 'product_name' in h_df.columns:
+                    mask = h_df['product_name'].astype(str).str.strip() == p_clean
+                    if mask.any():
+                        h_df.loc[mask, 'rmb_price'] = price_val
+                        if cache_p.endswith('.parquet'):
+                            h_df.to_parquet(cache_p, index=False)
+                        else:
+                            h_df.to_csv(cache_p, index=False)
+            except Exception:
+                pass
+    return True
+
 def save_product_supplier_mappings(records: List[Dict[str, Any]]):
-    """Save or update product-to-RMB price mappings."""
+    """Save or update product-to-RMB price mappings and sync to hermes_items."""
     if not records:
         return
 
@@ -893,5 +947,13 @@ def save_product_supplier_mappings(records: List[Dict[str, Any]]):
         combined = new_df
 
     combined.to_csv(MAPPINGS_FILE, index=False, encoding='utf-8')
+
+    # Propagate RMB prices directly to Hermes AI table
+    for r in records:
+        p_name = r.get('product_name')
+        p_rmb = r.get('rmb_price')
+        if p_name and p_rmb and float(p_rmb) > 0:
+            sync_product_rmb_to_hermes(str(p_name), float(p_rmb))
+
 
 
