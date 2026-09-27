@@ -263,7 +263,7 @@ async function startBridge() {
                     sender: senderPhone,
                     push_name: pushName
                 }, {
-                    timeout: 45000,
+                    timeout: 60000,
                     headers: { 'Content-Type': 'application/json' }
                 });
 

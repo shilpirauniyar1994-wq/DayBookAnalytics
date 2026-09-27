@@ -82,13 +82,12 @@ Rules:
    - Only quote information retrieved from the database tools. If an item is not found, state it clearly.
 """
 
-# Available models in priority order
+# Available models in priority order (fastest first)
 MODEL_CANDIDATES = [
-    "gemini-3.8-flash",
-    "gemini-flash-latest",
-    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
-    "gemini-pro-latest",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
 ]
 
 PHOTO_KEYWORDS = {
