@@ -214,20 +214,38 @@ async function startBridge() {
         for (const msg of m.messages) {
             if (msg.key.fromMe) continue;
             if (msg.key.remoteJid === 'status@broadcast') continue;
-            const isGroup = msg.key.remoteJid.endsWith('@g.us');
+            const senderJid = msg.key.remoteJid;
+            const pushName = msg.pushName || 'Customer';
+            const senderPhone = senderJid.split('@')[0];
+            const isGroup = senderJid.endsWith('@g.us');
 
-            const isImage = !!(msg.message?.imageMessage);
+            const messageContent = 
+                msg.message?.ephemeralMessage?.message ||
+                msg.message?.viewOnceMessage?.message ||
+                msg.message?.viewOnceMessageV2?.message ||
+                msg.message;
+
+            const imageMsg = messageContent?.imageMessage;
+            const isImage = !!imageMsg;
             let imageBase64 = null;
             let mimeType = 'image/jpeg';
 
             if (isImage) {
                 try {
-                    console.log(`[Bridge] Downloading incoming photo from ${pushName}...`);
-                    const imgBuffer = await downloadMediaMessage(msg, 'buffer', {});
+                    console.log(`[Bridge] Downloading incoming photo from ${pushName} (+${senderPhone})...`);
+                    const imgBuffer = await downloadMediaMessage(
+                        msg,
+                        'buffer',
+                        {},
+                        {
+                            logger: pino({ level: 'silent' }),
+                            reuploadRequest: sock.updateMediaMessage
+                        }
+                    );
                     if (imgBuffer && imgBuffer.length > 0) {
                         imageBase64 = imgBuffer.toString('base64');
-                        mimeType = msg.message?.imageMessage?.mimetype || 'image/jpeg';
-                        console.log(`[Bridge] Downloaded photo (${(imgBuffer.length / 1024).toFixed(1)} KB)`);
+                        mimeType = imageMsg.mimetype || 'image/jpeg';
+                        console.log(`[Bridge] Downloaded photo (${(imgBuffer.length / 1024).toFixed(1)} KB, type: ${mimeType})`);
                     }
                 } catch (err) {
                     console.error('[Bridge] Error downloading image media:', err.message);
@@ -235,17 +253,13 @@ async function startBridge() {
             }
 
             const text = 
-                msg.message?.conversation ||
-                msg.message?.extendedTextMessage?.text ||
-                msg.message?.imageMessage?.caption ||
+                messageContent?.conversation ||
+                messageContent?.extendedTextMessage?.text ||
+                imageMsg?.caption ||
                 '';
 
             const trimmedText = text.trim();
             if (!trimmedText && !imageBase64) continue;
-
-            const senderJid = msg.key.remoteJid;
-            const pushName = msg.pushName || 'Customer';
-            const senderPhone = senderJid.split('@')[0];
 
             const displayMsg = trimmedText || (imageBase64 ? '[Sent a photo]' : '');
             console.log(`[Bridge] Incoming from ${pushName} (+${senderPhone}): "${displayMsg}"`);
