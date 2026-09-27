@@ -104,6 +104,20 @@ def build_hermes_items_df() -> pd.DataFrame:
     merged = pd.merge(bafa_sub, stock_sub, on='product_name', how='outer')
     merged = pd.merge(merged, latest_sales, on='product_name', how='left')
     merged = pd.merge(merged, rmb_df, on='product_name', how='left')
+
+    # Preserve uploaded Primary Supabase storage image_urls if Bafa has null
+    if client:
+        try:
+            ex_res = client.table('hermes_items').select('product_name, image_url').not_.is_('image_url', 'null').execute()
+            if ex_res.data:
+                ex_df = pd.DataFrame(ex_res.data).rename(columns={'image_url': 'primary_image_url'})
+                ex_df['product_name'] = ex_df['product_name'].astype(str).str.strip()
+                ex_df = ex_df.drop_duplicates('product_name')
+                merged = pd.merge(merged, ex_df, on='product_name', how='left')
+                merged['image_url'] = merged['image_url'].fillna(merged['primary_image_url'])
+        except Exception:
+            pass
+
     merged = merged.copy()
 
     # 7. Clean and Standardize Fields

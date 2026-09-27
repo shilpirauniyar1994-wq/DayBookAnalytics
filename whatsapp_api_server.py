@@ -4,6 +4,7 @@ Bridges Baileys WhatsApp client with Google Gemini catalog and inventory search.
 Runs on http://127.0.0.1:5005
 """
 
+import os
 import sys
 import json
 import re
@@ -20,26 +21,42 @@ except Exception:
     pass
 
 PORT = 5005
+LOCAL_IMAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "HermesData", "assets", "images"))
 
-def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, str]]]:
+def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Transforms markdown into WhatsApp-friendly text formatting and extracts
-    all embedded images with their captions.
+    all embedded images (both remote URLs and local server filepaths) with their captions.
     """
-    # 1. Extract markdown images ![alt](url)
-    img_matches = re.findall(r'!\[(.*?)\]\((https?://[^\s\)]+)\)', raw_text)
-    images = [{"url": url, "caption": f"*{alt}*" if alt else ""} for alt, url in img_matches]
+    # 1. Extract markdown images ![alt](target)
+    img_matches = re.findall(r'!\[(.*?)\]\(([^\s\)]+)\)', raw_text)
+    images = []
+    for alt, target in img_matches:
+        caption = f"*{alt}*" if alt else ""
+        if target.startswith(("http://", "https://")):
+            images.append({"url": target, "path": None, "caption": caption})
+        elif target.startswith("local://"):
+            fname = target[8:]
+            fpath = os.path.join(LOCAL_IMAGE_DIR, fname)
+            if os.path.exists(fpath):
+                images.append({"url": None, "path": fpath, "caption": caption})
+        elif os.path.isabs(target) and os.path.exists(target):
+            images.append({"url": None, "path": target, "caption": caption})
+        else:
+            fpath = os.path.join(LOCAL_IMAGE_DIR, os.path.basename(target))
+            if os.path.exists(fpath):
+                images.append({"url": None, "path": fpath, "caption": caption})
 
     # 2. Fallback: If no markdown images found but raw image URLs exist
     if not images:
         raw_urls = re.findall(r'(https?://[^\s\)]+?\.(?:jpg|jpeg|png|webp))', raw_text, re.IGNORECASE)
         for u in raw_urls:
-            images.append({"url": u, "caption": ""})
+            images.append({"url": u, "path": None, "caption": ""})
 
     text = raw_text
 
     # 3. Strip out the ![alt](url) tags from text
-    text = re.sub(r'!\[.*?\]\(https?://[^\s\)]+\)\n?', '', text)
+    text = re.sub(r'!\[.*?\]\([^\s\)]+\)\n?', '', text)
 
     # 4. Convert headers (### Title) to WhatsApp bold (*Title*)
     text = re.sub(r'#{1,6}\s*(.*)', r'*\1*', text)

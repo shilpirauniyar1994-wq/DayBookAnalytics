@@ -114,8 +114,8 @@ with col_sync1:
 
 with col_sync2:
     st.write("")
-    st.write("")
-    sync_btn = st.button("🚀 Sync Knowledge Base Now", type="primary", use_container_width=True)
+    sync_btn = st.button("🚀 Sync Catalog & Stock", type="primary", use_container_width=True)
+    photo_sync_btn = st.button("📸 Sync Photos to Supabase", use_container_width=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -140,6 +140,17 @@ if sync_btn:
     except Exception as e:
         status_text.empty()
         st.error(f"❌ **Sync Failed:** {e}")
+
+if photo_sync_btn:
+    with st.spinner("Uploading physical photos to Primary Supabase Storage..."):
+        try:
+            from sync_local_photos_to_supabase import sync_photos
+            sync_photos()
+            st.success("✅ **Photo Sync Successful!** Local images uploaded to Supabase Storage and linked to catalog.")
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ **Photo Sync Failed:** {e}")
 
 # ---------------------------------------------------------------------------
 # 2. Load Data & Top KPIs

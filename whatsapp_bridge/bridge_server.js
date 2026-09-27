@@ -262,17 +262,27 @@ async function startBridge() {
                     console.log(`[Bridge] Sending ${images.length} product photos to +${senderPhone}...`);
                     for (const img of images) {
                         const imgUrl = typeof img === 'string' ? img : img.url;
+                        const imgPath = typeof img === 'object' ? img.path : null;
                         const caption = typeof img === 'string' ? '' : (img.caption || '');
-                        if (imgUrl) {
-                            try {
+
+                        try {
+                            if (imgPath && fs.existsSync(imgPath)) {
+                                console.log(`[Bridge] Sending local image: ${imgPath}`);
+                                await sock.sendMessage(senderJid, {
+                                    image: fs.readFileSync(imgPath),
+                                    caption: caption
+                                });
+                                await new Promise((r) => setTimeout(r, 600));
+                            } else if (imgUrl) {
+                                console.log(`[Bridge] Sending remote image: ${imgUrl}`);
                                 await sock.sendMessage(senderJid, {
                                     image: { url: imgUrl },
                                     caption: caption
                                 });
                                 await new Promise((r) => setTimeout(r, 600));
-                            } catch (imgErr) {
-                                console.error(`[Bridge] Failed to send image ${imgUrl}:`, imgErr.message);
                             }
+                        } catch (imgErr) {
+                            console.error(`[Bridge] Failed to send image (${imgPath || imgUrl}):`, imgErr.message);
                         }
                     }
                 }

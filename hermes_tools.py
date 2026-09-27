@@ -23,6 +23,43 @@ _catalog_cache_time = 0
 _cost_cache: Dict[str, Dict[str, Any]] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes in-memory cache
 
+LOCAL_IMAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "HermesData", "assets", "images"))
+_local_images_index: Dict[str, str] = {}
+_local_images_indexed = False
+
+def get_local_images_index() -> Dict[str, str]:
+    """Indexes physical images in HermesData/assets/images by normalized product name."""
+    global _local_images_index, _local_images_indexed
+    if not _local_images_indexed:
+        if os.path.exists(LOCAL_IMAGE_DIR):
+            for fname in os.listdir(LOCAL_IMAGE_DIR):
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in ['.jpg', '.jpeg', '.png', '.webp']:
+                    base = os.path.splitext(fname)[0]
+                    norm = normalize_text(base)
+                    if norm:
+                        _local_images_index[norm] = fname
+                    _local_images_index[base.lower().strip()] = fname
+        _local_images_indexed = True
+    return _local_images_index
+
+def resolve_product_image(product_name: str, existing_url: Optional[str] = None) -> Optional[str]:
+    """
+    Returns existing cloud image_url if valid.
+    Otherwise falls back to physical local image file in HermesData/assets/images/.
+    """
+    if existing_url and str(existing_url).strip() and str(existing_url).strip().lower() not in ['none', 'null', 'nan']:
+        return str(existing_url).strip()
+
+    idx = get_local_images_index()
+    p_norm = normalize_text(product_name)
+    p_lower = str(product_name).strip().lower()
+
+    local_file = idx.get(p_norm) or idx.get(p_lower)
+    if local_file:
+        return f"local://{local_file}"
+    return None
+
 def get_client():
     global _client
     if _client is None:
@@ -96,6 +133,8 @@ def get_cached_catalog() -> List[Dict[str, Any]]:
                 items.extend(res2.data or [])
 
             if items:
+                for it in items:
+                    it["image_url"] = resolve_product_image(it.get("product_name"), it.get("image_url"))
                 _catalog_cache = items
                 _catalog_cache_time = now
         except Exception as e:
@@ -254,9 +293,11 @@ def search_products(
     if k.lower() in ["all", "everything", "catalog", "all items", "all products"]:
         if in_stock_only:
             db_query = db_query.gt("current_stock", 0)
+        items = db_query.order("current_stock", desc=True).limit(safe_limit * 2 if has_photo_only else safe_limit).execute().data or []
+        for it in items:
+            it["image_url"] = resolve_product_image(it.get("product_name"), it.get("image_url"))
         if has_photo_only:
-            db_query = db_query.not_.is_("image_url", "null")
-        items = db_query.order("current_stock", desc=True).limit(safe_limit).execute().data or []
+            items = [it for it in items if it.get("image_url")][:safe_limit]
         items = enrich_items_with_costing(items)
         return {
             "searched_keyword": keyword,
@@ -270,10 +311,12 @@ def search_products(
     db_query = db_query.or_(f"tags.ilike.%{k}%,product_name.ilike.%{k}%")
     if in_stock_only:
         db_query = db_query.gt("current_stock", 0)
-    if has_photo_only:
-        db_query = db_query.not_.is_("image_url", "null")
 
-    items = db_query.order("current_stock", desc=True).limit(safe_limit).execute().data or []
+    items = db_query.order("current_stock", desc=True).limit(safe_limit * 2 if has_photo_only else safe_limit).execute().data or []
+    for it in items:
+        it["image_url"] = resolve_product_image(it.get("product_name"), it.get("image_url"))
+    if has_photo_only:
+        items = [it for it in items if it.get("image_url")][:safe_limit]
 
     # If direct SQL found matches, return them immediately
     if len(items) > 0:
