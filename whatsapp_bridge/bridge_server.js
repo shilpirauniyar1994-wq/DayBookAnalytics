@@ -18,6 +18,18 @@ const QRCode = require('qrcode');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const net = require('net');
+
+// Single-instance lock on port 5006 to prevent duplicate processes
+const LOCK_PORT = 5006;
+const lockServer = net.createServer();
+lockServer.once('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.log('[Bridge] Another instance of bridge_server.js is already running. Exiting duplicate process.');
+        process.exit(0);
+    }
+});
+lockServer.listen(LOCK_PORT, '127.0.0.1');
 
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
 const QR_FILE = path.join(__dirname, 'qr.png');
@@ -43,6 +55,22 @@ function updateStatus(statusObj) {
     }
 }
 
+// Safely clear contents of auth folder (compatible with mounted volumes)
+function clearAuthDir() {
+    try {
+        if (fs.existsSync(AUTH_DIR)) {
+            const files = fs.readdirSync(AUTH_DIR);
+            for (const file of files) {
+                try {
+                    fs.rmSync(path.join(AUTH_DIR, file), { recursive: true, force: true });
+                } catch (_) {}
+            }
+        }
+    } catch (e) {
+        console.error('[Bridge] Error clearing auth files:', e.message);
+    }
+}
+
 // Helper to log recent messages
 function logMessage(entry) {
     try {
@@ -57,7 +85,6 @@ function logMessage(entry) {
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             ...entry
         });
-        // Keep last 50
         if (logs.length > 50) logs = logs.slice(0, 50);
         fs.writeFileSync(LOG_FILE, JSON.stringify(logs, null, 2), 'utf-8');
     } catch (e) {
@@ -70,6 +97,11 @@ let sock = null;
 async function startBridge() {
     console.log('[Bridge] Starting WhatsApp Multi-Device connection...');
     updateStatus({ status: 'starting', qr_available: false });
+
+    // Ensure auth directory exists
+    if (!fs.existsSync(AUTH_DIR)) {
+        try { fs.mkdirSync(AUTH_DIR, { recursive: true }); } catch (_) {}
+    }
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
@@ -85,16 +117,13 @@ async function startBridge() {
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true,
         browser: ['DayBook Hermes', 'Desktop', '1.0.0'],
         syncFullHistory: false,
         generateHighQualityLinkPreview: true,
     });
 
-    // Save auth credentials whenever updated
     sock.ev.on('creds.update', saveCreds);
 
-    // Monitor connection events
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
@@ -112,6 +141,8 @@ async function startBridge() {
                 updateStatus({
                     status: 'scan_qr',
                     qr_available: true,
+                    phone_number: null,
+                    user_name: null,
                     updated_at: new Date().toISOString()
                 });
             } catch (err) {
@@ -121,28 +152,27 @@ async function startBridge() {
 
         if (connection === 'close') {
             const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+            const shouldReconnect = !isLoggedOut;
             const reason = lastDisconnect?.error?.message || `Status code ${statusCode}`;
 
             console.log(`[Bridge] Connection closed (${reason}). Reconnecting: ${shouldReconnect}`);
 
-            // If QR file exists, clean it up
             if (fs.existsSync(QR_FILE)) {
                 try { fs.unlinkSync(QR_FILE); } catch (_) {}
             }
 
-            if (statusCode === DisconnectReason.loggedOut) {
+            if (isLoggedOut) {
                 console.log('[Bridge] User logged out. Clearing auth credentials...');
-                try {
-                    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-                } catch (_) {}
+                clearAuthDir();
                 updateStatus({
-                    status: 'logged_out',
+                    status: 'scan_qr',
                     qr_available: false,
-                    last_error: 'Session logged out from WhatsApp.'
+                    phone_number: null,
+                    user_name: null,
+                    last_error: 'Logged out. Ready for new QR code.'
                 });
-                // Restart to show fresh QR code
-                setTimeout(startBridge, 3000);
+                setTimeout(startBridge, 2000);
             } else {
                 updateStatus({
                     status: 'reconnecting',
@@ -163,7 +193,6 @@ async function startBridge() {
             console.log(' Ready to receive queries and send product photos!');
             console.log('====================================================');
 
-            // Delete QR image when connected
             if (fs.existsSync(QR_FILE)) {
                 try { fs.unlinkSync(QR_FILE); } catch (_) {}
             }
@@ -178,18 +207,14 @@ async function startBridge() {
         }
     });
 
-    // Listen for incoming messages
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
 
         for (const msg of m.messages) {
-            // Ignore messages from self or status broadcasts
             if (msg.key.fromMe) continue;
             if (msg.key.remoteJid === 'status@broadcast') continue;
-            // Ignore group messages (focus on 1-on-1 customer inquiries, or allow both)
             const isGroup = msg.key.remoteJid.endsWith('@g.us');
 
-            // Extract message text
             const text = 
                 msg.message?.conversation ||
                 msg.message?.extendedTextMessage?.text ||
@@ -205,7 +230,6 @@ async function startBridge() {
 
             console.log(`[Bridge] Incoming from ${pushName} (+${senderPhone}): "${trimmedText}"`);
 
-            // Log incoming
             logMessage({
                 direction: 'in',
                 from: senderPhone,
@@ -214,13 +238,11 @@ async function startBridge() {
                 text: trimmedText
             });
 
-            // Indicate typing indicator in WhatsApp
             try {
                 await sock.sendPresenceUpdate('composing', senderJid);
             } catch (_) {}
 
             try {
-                // Forward request to Python Google Hermes Engine
                 const response = await axios.post(PYTHON_API_URL, {
                     message: trimmedText,
                     sender: senderPhone,
@@ -234,10 +256,8 @@ async function startBridge() {
                 const replyText = data?.reply || "I've checked the catalog, but couldn't retrieve the details.";
                 const images = Array.isArray(data?.images) ? data.images : [];
 
-                // 1. Send the text response
                 await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
 
-                // 2. Send attached product photos natively
                 if (images.length > 0) {
                     console.log(`[Bridge] Sending ${images.length} product photos to +${senderPhone}...`);
                     for (const img of images) {
@@ -249,7 +269,6 @@ async function startBridge() {
                                     image: { url: imgUrl },
                                     caption: caption
                                 });
-                                // Small delay between image uploads for smooth delivery
                                 await new Promise((r) => setTimeout(r, 600));
                             } catch (imgErr) {
                                 console.error(`[Bridge] Failed to send image ${imgUrl}:`, imgErr.message);
@@ -258,7 +277,6 @@ async function startBridge() {
                     }
                 }
 
-                // Log outgoing
                 logMessage({
                     direction: 'out',
                     to: senderPhone,
@@ -283,7 +301,6 @@ async function startBridge() {
     });
 }
 
-// Initial status write
 updateStatus({ status: 'offline', qr_available: false });
 
 startBridge().catch((err) => {

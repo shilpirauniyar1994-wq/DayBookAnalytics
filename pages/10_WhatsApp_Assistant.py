@@ -130,6 +130,16 @@ def start_python_api():
         time.sleep(1.5)
 
 def start_baileys_bridge():
+    # Kill any zombie bridge processes first to prevent port/auth lock
+    try:
+        if os.name == 'nt':
+            subprocess.run(["taskkill", "/F", "/IM", "node.exe"], capture_output=True)
+        else:
+            subprocess.run(["pkill", "-9", "-f", "bridge_server.js"], capture_output=True)
+    except Exception:
+        pass
+    time.sleep(0.5)
+
     subprocess.Popen(
         ["node", "bridge_server.js"],
         cwd=BRIDGE_DIR,
@@ -138,21 +148,44 @@ def start_baileys_bridge():
     time.sleep(2.0)
 
 def unlink_whatsapp_session():
-    # Stop bridge and delete auth directory
+    # 1. Terminate any running bridge process
+    try:
+        if os.name == 'nt':
+            subprocess.run(["taskkill", "/F", "/IM", "node.exe"], capture_output=True)
+        else:
+            subprocess.run(["pkill", "-9", "-f", "bridge_server.js"], capture_output=True)
+    except Exception:
+        pass
+
+    # 2. Clear auth directory contents without deleting the mounted folder itself
     if os.path.exists(AUTH_DIR):
-        try:
-            import shutil
-            shutil.rmtree(AUTH_DIR, ignore_errors=True)
-        except Exception as e:
-            st.error(f"Error clearing auth: {e}")
+        import shutil
+        for fname in os.listdir(AUTH_DIR):
+            p = os.path.join(AUTH_DIR, fname)
+            try:
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    os.remove(p)
+            except Exception:
+                pass
+
+    # 3. Remove old QR code
     if os.path.exists(QR_PATH):
         try:
             os.remove(QR_PATH)
         except Exception:
             pass
-    # Update status to offline
+
+    # 4. Set status to scan_qr / starting
     with open(STATUS_PATH, "w", encoding="utf-8") as f:
-        json.dump({"status": "offline", "qr_available": False, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")}, f)
+        json.dump({
+            "status": "scan_qr",
+            "phone_number": None,
+            "user_name": None,
+            "qr_available": False,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        }, f)
 
 # Title & Description
 st.markdown('<div class="wa-header">📱 WhatsApp Live Assistant</div>', unsafe_allow_html=True)
@@ -204,17 +237,18 @@ with col_btn1:
 with col_btn2:
     if current_status == "connected":
         if st.button("🔌 Unlink Device", use_container_width=True, type="secondary"):
-            unlink_whatsapp_session()
-            st.warning("Session unlinked. Restarting bridge for new pairing...")
-            start_baileys_bridge()
-            time.sleep(2)
+            with st.spinner("Unlinking device and generating fresh QR code..."):
+                unlink_whatsapp_session()
+                start_baileys_bridge()
+                time.sleep(2.5)
             st.rerun()
     else:
-        if st.button("🚀 Start Bridge", use_container_width=True, type="primary"):
-            start_python_api()
-            start_baileys_bridge()
-            st.success("Services starting...")
-            time.sleep(2)
+        if st.button("🚀 Start / Reset Bridge", use_container_width=True, type="primary"):
+            with st.spinner("Resetting and launching WhatsApp bridge..."):
+                start_python_api()
+                unlink_whatsapp_session()
+                start_baileys_bridge()
+                time.sleep(2.5)
             st.rerun()
 
 tabs = st.tabs(["📲 Link WhatsApp Device", "💬 Live Simulator & Test", "📜 Activity Stream", "⚙️ Diagnostics & Architecture"])
