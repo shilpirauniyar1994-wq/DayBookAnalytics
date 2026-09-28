@@ -220,14 +220,31 @@ def get_party_ledger(party_name: Optional[str] = None) -> pd.DataFrame:
     """
     Get transaction ledger for a party (or all parties) with running balance.
     """
-    v_df = get_vouchers_df()
-    if v_df.empty:
-        return pd.DataFrame()
+    df = None
+    if is_supabase_configured() and party_name and party_name != 'All':
+        client = get_client()
+        if client:
+            try:
+                res = client.table('vouchers').select('*').eq('party_name', party_name).order('date').execute()
+                if res.data:
+                    df = pd.DataFrame(res.data)
+            except Exception as e:
+                print(f"[db] Supabase direct ledger query fallback: {e}")
 
-    if party_name and party_name != 'All':
-        df = v_df[v_df['party_name'] == party_name].copy()
-    else:
-        df = v_df.copy()
+    if df is None:
+        v_df = get_vouchers_df()
+        if v_df.empty:
+            return pd.DataFrame()
+
+        if party_name and party_name != 'All':
+            df = v_df[v_df['party_name'] == party_name].copy()
+        else:
+            df = v_df.copy()
+
+    if df.empty:
+        return df
+
+    df = df.copy()
 
     def to_date_safe(val):
         if isinstance(val, datetime.date) and not isinstance(val, datetime.datetime):
@@ -242,10 +259,10 @@ def get_party_ledger(party_name: Optional[str] = None) -> pd.DataFrame:
         return val
 
     df['date'] = df['date'].apply(to_date_safe)
-    df = df.sort_values(['date', 'voucher_no'])
+    df = df.sort_values(['date', 'voucher_no']).reset_index(drop=True)
 
-    df['debit_amount'] = df['debit_amount'].fillna(0.0)
-    df['credit_amount'] = df['credit_amount'].fillna(0.0)
+    df['debit_amount'] = pd.to_numeric(df['debit_amount'], errors='coerce').fillna(0.0)
+    df['credit_amount'] = pd.to_numeric(df['credit_amount'], errors='coerce').fillna(0.0)
 
     # Calculate running balance
     df['running_balance'] = (df['debit_amount'] - df['credit_amount']).cumsum()
