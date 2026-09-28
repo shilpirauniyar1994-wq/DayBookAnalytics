@@ -180,8 +180,8 @@ def extract_invoice_metadata(filepath: str) -> Dict[str, Any]:
                     meta['supplier'] = 'Huabei'
                 elif 'yiao' in t_lower:
                     meta['supplier'] = 'Yiao'
-                elif 'rara' in t_lower:
-                    meta['supplier'] = 'Rara'
+                elif 'rara' in t_lower or 'ayreen' in t_lower or 'maxra' in t_lower:
+                    meta['supplier'] = 'Ayreen'
                 elif 'shivam' in t_lower:
                     meta['supplier'] = 'Shivam'
     except Exception:
@@ -192,18 +192,12 @@ def extract_invoice_metadata(filepath: str) -> Dict[str, Any]:
         f_lower = fname.lower()
         if 'huabei' in f_lower or 'hb' in f_lower:
             meta['supplier'] = 'Huabei'
-        elif 'rara' in f_lower:
-            meta['supplier'] = 'Rara'
+        elif 'rara' in f_lower or 'ayreen' in f_lower or 'maxra' in f_lower or 'vg' in f_lower:
+            meta['supplier'] = 'Ayreen'
         elif 'shivam' in f_lower:
             meta['supplier'] = 'Shivam'
         elif 'yiao' in f_lower:
             meta['supplier'] = 'Yiao'
-        elif 'vg' in f_lower:
-            # VG is the consignee/importer (Vikesh Gupta). Check for Rara or border hints
-            if any(k in f_lower for k in ['rara', 'kerung', 'ktm', '4th', 'loaded']):
-                meta['supplier'] = 'Rara'
-            else:
-                meta['supplier'] = 'China Supplier'
         else:
             meta['supplier'] = 'Import Supplier'
 

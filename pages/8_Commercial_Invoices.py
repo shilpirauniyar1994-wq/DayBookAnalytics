@@ -478,10 +478,18 @@ with tab_reconcile:
                     st.markdown("<hr style='margin:3px 0px; border-color:#f1f5f9;'>", unsafe_allow_html=True)
 
                     if chosen_prod:
-                        item_key = db.make_item_key(meta.get('supplier', 'Huabei'), it_no, it_desc)
+                        sup_name = meta.get('supplier')
+                        if not sup_name or sup_name in ['Import Supplier', 'China Supplier']:
+                            f_check = os.path.basename(selected_file_path).lower()
+                            if any(k in f_check for k in ['vg', 'rara', 'ayreen', 'maxra']):
+                                sup_name = 'Ayreen'
+                            else:
+                                sup_name = 'Huabei'
+
+                        item_key = db.make_item_key(sup_name, it_no, it_desc)
                         form_updates.append({
                             'item_key': item_key,
-                            'supplier_name': meta.get('supplier', 'Huabei'),
+                            'supplier_name': sup_name,
                             'supplier_item_no': it_no,
                             'supplier_desc': it_desc,
                             'rmb_price': rmb_p,
@@ -497,7 +505,7 @@ with tab_reconcile:
                         })
                         form_catalog_mappings.append({
                             'product_name': chosen_prod,
-                            'supplier_name': meta.get('supplier', 'Huabei'),
+                            'supplier_name': sup_name,
                             'supplier_item_no': it_no,
                             'supplier_desc': it_desc,
                             'rmb_price': rmb_p,
