@@ -124,8 +124,9 @@ if 'upload_success_msg' in st.session_state:
 # ---------------------------------------------------------------------------
 # TABS
 # ---------------------------------------------------------------------------
-tab_reconcile, tab_db_items, tab_catalog, tab_history, tab_archive = st.tabs([
+tab_reconcile, tab_voucher_matcher, tab_db_items, tab_catalog, tab_history, tab_archive = st.tabs([
     "🎯 Voucher-Aware Reconciliation",
+    "📋 Voucher Commercial Matcher",
     "🔗 Database Items Matcher",
     "🏷️ Active RMB Price Catalog",
     "📈 Price Change History",
@@ -136,6 +137,22 @@ tab_reconcile, tab_db_items, tab_catalog, tab_history, tab_archive = st.tabs([
 v_df, li_df = db.load_local_data()
 tally_prods = sorted(li_df['product_name'].dropna().unique().tolist()) if not li_df.empty else []
 pv_df = v_df[v_df['voucher_category'] == 'Purchase'] if not v_df.empty else pd.DataFrame()
+
+# Build all_available_files and file_path_map globally
+current_unprocessed = invoice_matcher.get_unprocessed_invoices(folder)
+current_archived = [f for f in sorted(os.listdir(archive_folder)) if f.lower().endswith(('.xlsx', '.xls')) and not f.startswith(('~', '.'))] if os.path.exists(archive_folder) else []
+all_available_files = []
+file_path_map = {}
+
+for uf in current_unprocessed:
+    label = f"📥 [New] {uf}"
+    all_available_files.append(label)
+    file_path_map[label] = os.path.join(folder, uf)
+
+for af in current_archived:
+    label = f"🗃️ [Archived] {af}"
+    all_available_files.append(label)
+    file_path_map[label] = os.path.join(archive_folder, af)
 
 # Saved mappings memory
 saved_mappings_df = db.get_product_supplier_mappings()
@@ -155,23 +172,6 @@ if not saved_mappings_df.empty:
 with tab_reconcile:
     st.subheader("🎯 Stage 1 & 2: Macro Voucher Pairing & Micro Item Reconciliation")
     st.caption("Select any uploaded or archived commercial invoice to automatically match with its corresponding DayBook Purchase Voucher and reconcile item RMB prices.")
-
-    # Re-discover all current available invoice files
-    current_unprocessed = invoice_matcher.get_unprocessed_invoices(folder)
-    current_archived = [f for f in sorted(os.listdir(archive_folder)) if f.lower().endswith(('.xlsx', '.xls')) and not f.startswith(('~', '.'))] if os.path.exists(archive_folder) else []
-
-    all_available_files = []
-    file_path_map = {}
-
-    for uf in current_unprocessed:
-        label = f"📥 [New] {uf}"
-        all_available_files.append(label)
-        file_path_map[label] = os.path.join(folder, uf)
-
-    for af in current_archived:
-        label = f"🗃️ [Archived] {af}"
-        all_available_files.append(label)
-        file_path_map[label] = os.path.join(archive_folder, af)
 
     if not all_available_files:
         st.info("No commercial invoice spreadsheets available. Upload an Excel file above to begin matching.")
@@ -535,7 +535,352 @@ with tab_reconcile:
                         st.rerun()
 
 # ---------------------------------------------------------------------------
-# TAB 2: DATABASE ITEMS MATCHER (MANAGEMENT OF EXTRACTED DB ITEMS)
+# TAB 2: VOUCHER COMMERCIAL MATCHER (MANUAL SPREADSHEET ENTRY ON DAYBOOK VOUCHERS)
+# ---------------------------------------------------------------------------
+with tab_voucher_matcher:
+    st.subheader("📋 DayBook Purchase Voucher Commercial Data Matcher")
+    st.caption("Select any DayBook Purchase Voucher to inspect its ledger line items. Enter and map the corresponding China commercial invoice data (RMB unit prices, carton pack sizes, supplier codes, carton quantities) in an interactive spreadsheet grid without altering your DayBook ledger records.")
+
+    if pv_df.empty:
+        st.info("No DayBook Purchase Vouchers found in database. Upload DayBook records to populate.")
+    else:
+        # 1. Filter and Search Controls for Purchase Vouchers
+        f_col1, f_col2, f_col3 = st.columns([1.5, 2, 1.5])
+        with f_col1:
+            parties = ["All Parties"] + sorted(pv_df['party_name'].dropna().unique().tolist())
+            selected_party = st.selectbox("Filter by Party / Vendor:", parties, key="vcm_party_filter")
+        with f_col2:
+            v_search = st.text_input("🔍 Search Voucher #, Date, or Party:", "", key="vcm_search")
+        with f_col3:
+            sort_opt = st.selectbox("Sort Vouchers:", ["Newest Date First", "Oldest Date First", "Highest Amount First", "Voucher Number"], key="vcm_sort_opt")
+
+        filtered_pv = pv_df.copy()
+        if selected_party != "All Parties":
+            filtered_pv = filtered_pv[filtered_pv['party_name'] == selected_party]
+        if v_search:
+            q = v_search.lower()
+            filtered_pv = filtered_pv[
+                filtered_pv['voucher_no'].astype(str).str.lower().str.contains(q, regex=False) |
+                filtered_pv['party_name'].astype(str).str.lower().str.contains(q, regex=False) |
+                filtered_pv['date'].astype(str).str.lower().str.contains(q, regex=False)
+            ]
+        if sort_opt == "Newest Date First":
+            filtered_pv = filtered_pv.sort_values('date', ascending=False)
+        elif sort_opt == "Oldest Date First":
+            filtered_pv = filtered_pv.sort_values('date', ascending=True)
+        elif sort_opt == "Highest Amount First":
+            filtered_pv = filtered_pv.sort_values('credit_amount', ascending=False)
+        elif sort_opt == "Voucher Number":
+            filtered_pv = filtered_pv.sort_values('voucher_no', ascending=True)
+
+        if filtered_pv.empty:
+            st.warning("No purchase vouchers match your filter criteria.")
+        else:
+            # Build clean dropdown list of vouchers
+            voucher_labels = []
+            voucher_map = {}
+            for _, v_row in filtered_pv.iterrows():
+                v_no = str(v_row['voucher_no'])
+                p_name = str(v_row['party_name'])
+                dt = str(v_row['date'])
+                amt = float(v_row.get('credit_amount', 0.0))
+                v_items_count = len(li_df[(li_df['voucher_no'] == v_no) & (li_df['party_name'] == p_name)])
+                lbl = f"🎯 Voucher #{v_no} — {p_name} | Date: {dt} | {v_items_count} line items | Rs. {amt:,.0f}"
+                voucher_labels.append(lbl)
+                voucher_map[lbl] = v_row
+
+            sel_col1, sel_col2 = st.columns([3.2, 1.8])
+            with sel_col1:
+                chosen_voucher_lbl = st.selectbox(
+                    "Select Purchase Voucher to Map Commercial Data:",
+                    options=voucher_labels,
+                    key="vcm_chosen_voucher"
+                )
+                selected_v_row = voucher_map[chosen_voucher_lbl]
+                active_v_no = str(selected_v_row['voucher_no'])
+                active_v_party = str(selected_v_row['party_name'])
+                active_v_date = str(selected_v_row['date'])
+                active_v_amt = float(selected_v_row.get('credit_amount', 0.0))
+
+            with sel_col2:
+                # SUPPLIER DECISION FOR THE INVOICE
+                from po_engine import resolve_supplier_alias
+                detected_supplier = resolve_supplier_alias(active_v_party, active_v_no)
+                standard_suppliers = ["Ayreen", "Huabei", "Yiao", "Shivam", "Ben", "Import Supplier", "➕ Custom Supplier..."]
+                sup_idx = standard_suppliers.index(detected_supplier) if detected_supplier in standard_suppliers else 0
+
+                chosen_sup_type = st.selectbox(
+                    "Decide Supplier for this Invoice:",
+                    options=standard_suppliers,
+                    index=sup_idx,
+                    key=f"vcm_supplier_decision_{active_v_no}",
+                    help="All commercial mappings and RMB catalog updates saved from this voucher will be assigned to this supplier."
+                )
+
+                if chosen_sup_type == "➕ Custom Supplier...":
+                    final_invoice_supplier = st.text_input("Enter Custom Supplier Name:", value=detected_supplier or "Ayreen", key=f"vcm_custom_sup_{active_v_no}").strip()
+                else:
+                    final_invoice_supplier = chosen_sup_type
+
+            # Optional Reference Commercial Invoice (Excel Scrape Helper)
+            ref_items = []
+            with st.expander("📂 Optional: Reference a Commercial Invoice Excel File (for preview & auto-fill)", expanded=False):
+                ref_col1, ref_col2 = st.columns([3.5, 1.5])
+                with ref_col1:
+                    ref_files = ["-- None (Manual Entry) --"] + all_available_files
+                    selected_ref = st.selectbox("Choose Commercial Invoice File to Cross-Reference:", ref_files, key=f"vcm_ref_file_{active_v_no}")
+                with ref_col2:
+                    st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                    auto_fill_clicked = st.button("⚡ Auto-Fill Matches", key=f"vcm_autofill_btn_{active_v_no}", help="Fuzzy match items from the reference invoice into the table below", disabled=(selected_ref == "-- None (Manual Entry) --"))
+
+                if selected_ref != "-- None (Manual Entry) --":
+                    ref_path = file_path_map.get(selected_ref)
+                    if ref_path and os.path.exists(ref_path):
+                        ref_items = invoice_matcher.parse_commercial_invoice(ref_path)
+                        st.caption(f"📁 Extracted **{len(ref_items)} item(s)** from `{os.path.basename(ref_path)}`. Click **'Auto-Fill Matches'** to populate matching items below.")
+
+            # Fetch line items for active voucher
+            v_items = li_df[(li_df['voucher_no'] == active_v_no) & (li_df['party_name'] == active_v_party)].copy()
+            if v_items.empty:
+                v_items = li_df[li_df['voucher_no'] == active_v_no].copy()
+
+            if v_items.empty:
+                st.info(f"No line items found for Voucher #{active_v_no}.")
+            else:
+                # Load existing saved commercial mappings for pre-filling
+                saved_maps = db.get_product_supplier_mappings()
+                saved_map_dict = {}
+                if not saved_maps.empty:
+                    for _, sm in saved_maps.iterrows():
+                        p_clean = str(sm['product_name']).strip()
+                        saved_map_dict[p_clean] = sm.to_dict()
+
+                # Build rows for editor
+                editor_rows = []
+                for r_idx, it_row in v_items.reset_index(drop=True).iterrows():
+                    p_name = str(it_row.get('product_name', '')).strip()
+                    v_qty = float(it_row.get('quantity', 0.0))
+                    v_rate = float(it_row.get('rate', 0.0))
+
+                    # Check if we have pre-saved info
+                    saved_info = saved_map_dict.get(p_name, {})
+                    init_rmb = float(saved_info.get('rmb_price', 0.0))
+                    init_pcs = int(saved_info.get('pcs_per_ctn', 0))
+                    init_code = str(saved_info.get('supplier_item_no', '')) if pd.notna(saved_info.get('supplier_item_no')) else ''
+                    init_desc = str(saved_info.get('supplier_desc', '')) if pd.notna(saved_info.get('supplier_desc')) else ''
+                    init_file = str(saved_info.get('invoice_file', '')) if pd.notna(saved_info.get('invoice_file')) else (os.path.basename(file_path_map.get(selected_ref, '')) if selected_ref != "-- None (Manual Entry) --" else '')
+
+                    # Auto-fill if requested from reference invoice
+                    if auto_fill_clicked and ref_items:
+                        best_match = None
+                        best_score = 0.0
+                        for ref_it in ref_items:
+                            s1 = invoice_matcher.similarity(p_name, ref_it.get('supplier_desc', ''))
+                            s2 = invoice_matcher.similarity(p_name, ref_it.get('supplier_item_no', ''))
+                            s_max = max(s1, s2)
+                            if s_max > best_score:
+                                best_score = s_max
+                                best_match = ref_it
+                        if best_match and best_score >= 0.55:
+                            init_rmb = float(best_match.get('rmb_price', 0.0))
+                            init_pcs = int(best_match.get('pcs_per_ctn', 0))
+                            init_code = str(best_match.get('supplier_item_no', ''))
+                            init_desc = str(best_match.get('supplier_desc', ''))
+                            init_file = os.path.basename(file_path_map.get(selected_ref, ''))
+
+                    init_ctns = int(round(v_qty / init_pcs)) if init_pcs > 0 and v_qty > 0 else 0
+                    mult = round(v_rate / init_rmb, 2) if init_rmb > 0 and v_rate > 0 else 0.0
+
+                    editor_rows.append({
+                        'product_name': p_name,
+                        'voucher_rate': v_rate,
+                        'voucher_qty': int(v_qty),
+                        'rmb_price': init_rmb,
+                        'pcs_per_ctn': init_pcs,
+                        'supplier_item_no': init_code,
+                        'supplier_desc': init_desc,
+                        'invoiced_ctns': init_ctns,
+                        'supplier_name': final_invoice_supplier,
+                        'commercial_invoice': init_file,
+                        'landed_multiplier': mult,
+                        'save_to_catalog': True if init_rmb > 0 else False
+                    })
+
+                editor_df = pd.DataFrame(editor_rows)
+
+                # Top Action Row
+                top_b1, top_b2 = st.columns([3.5, 1.5])
+                with top_b1:
+                    st.markdown(f"**Voucher Line Items ({len(editor_df)} items)** — Enter commercial RMB data below:")
+                    st.caption(f"🔒 DayBook product names, rates, and quantities are locked. Selected supplier: **`{final_invoice_supplier}`**.")
+                with top_b2:
+                    top_save = st.button("💾 Save Commercial Data", type="primary", use_container_width=True, key=f"vcm_top_save_{active_v_no}")
+
+                edited_df = st.data_editor(
+                    editor_df,
+                    column_config={
+                        "product_name": st.column_config.TextColumn(
+                            "🔒 DayBook Product",
+                            help="Product name in DayBook ledger (Locked to preserve database sanctity)",
+                            disabled=True,
+                            width="medium"
+                        ),
+                        "voucher_rate": st.column_config.NumberColumn(
+                            "🔒 Rate (Rs.)",
+                            help="Billed rate in DayBook Purchase Voucher (NPR)",
+                            format="Rs. %.2f",
+                            disabled=True,
+                            width="small"
+                        ),
+                        "voucher_qty": st.column_config.NumberColumn(
+                            "🔒 Qty",
+                            help="Billed quantity in DayBook Purchase Voucher",
+                            format="%d pcs",
+                            disabled=True,
+                            width="small"
+                        ),
+                        "rmb_price": st.column_config.NumberColumn(
+                            "✏️ RMB Price (¥)",
+                            help="Unit factory purchase price in Chinese Yuan",
+                            format="¥ %.3f",
+                            min_value=0.0,
+                            step=0.01,
+                            width="small"
+                        ),
+                        "pcs_per_ctn": st.column_config.NumberColumn(
+                            "✏️ Pack Size",
+                            help="Master carton pack size (Pcs/Ctn)",
+                            min_value=0,
+                            step=1,
+                            width="small"
+                        ),
+                        "supplier_item_no": st.column_config.TextColumn(
+                            "✏️ Item No / Mark",
+                            help="Supplier item code, model number, or carton mark",
+                            width="small"
+                        ),
+                        "supplier_desc": st.column_config.TextColumn(
+                            "✏️ Supplier Description",
+                            help="Product description from commercial invoice",
+                            width="medium"
+                        ),
+                        "invoiced_ctns": st.column_config.NumberColumn(
+                            "✏️ Ctns",
+                            help="Invoiced carton count",
+                            min_value=0,
+                            step=1,
+                            width="small"
+                        ),
+                        "supplier_name": st.column_config.SelectboxColumn(
+                            "✏️ Supplier",
+                            help="Supplier for this item (defaults to chosen invoice supplier)",
+                            options=["Ayreen", "Huabei", "Yiao", "Shivam", "Ben", "Import Supplier"],
+                            width="small"
+                        ),
+                        "commercial_invoice": st.column_config.TextColumn(
+                            "✏️ Invoice File Ref",
+                            help="Commercial invoice or container loaded list reference",
+                            width="medium"
+                        ),
+                        "landed_multiplier": st.column_config.NumberColumn(
+                            "📊 Landed Multiplier",
+                            help="Calculated Landed Multiplier (Rs. Rate / ¥ RMB Price). Target: 18x - 45x.",
+                            format="%.2fx",
+                            disabled=True,
+                            width="small"
+                        ),
+                        "save_to_catalog": st.column_config.CheckboxColumn(
+                            "✅ Save?",
+                            help="Check to include in Active RMB Price Catalog",
+                            default=True,
+                            width="small"
+                        )
+                    },
+                    disabled=["product_name", "voucher_rate", "voucher_qty", "landed_multiplier"],
+                    hide_index=True,
+                    use_container_width=True,
+                    num_rows="fixed",
+                    key=f"vcm_editor_grid_{active_v_no}"
+                )
+
+                # Recompute dynamic multiplier in edited_df
+                for idx in edited_df.index:
+                    r_rate = edited_df.at[idx, 'voucher_rate']
+                    r_rmb = edited_df.at[idx, 'rmb_price']
+                    if r_rmb > 0 and r_rate > 0:
+                        edited_df.at[idx, 'landed_multiplier'] = round(r_rate / r_rmb, 2)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                bot_b1, bot_b2 = st.columns([3.5, 1.5])
+                with bot_b1:
+                    valid_items = edited_df[edited_df['rmb_price'] > 0]
+                    avg_m = valid_items['landed_multiplier'].mean() if not valid_items.empty else 0.0
+                    st.caption(f"📊 Items with RMB Price: **{len(valid_items)} / {len(editor_df)}** | Avg Landed Multiplier: **{avg_m:.1f}x**")
+                with bot_b2:
+                    bottom_save = st.button("💾 Save Commercial Data & Update Catalog", type="primary", use_container_width=True, key=f"vcm_bot_save_{active_v_no}")
+
+                # Save execution handler
+                if top_save or bottom_save:
+                    rows_to_save = edited_df[edited_df['save_to_catalog'] == True].copy()
+                    valid_save = rows_to_save[rows_to_save['rmb_price'] > 0]
+
+                    if valid_save.empty:
+                        st.warning("⚠️ No products have a valid RMB Price (> 0) to save. Please enter RMB unit prices.")
+                    else:
+                        catalog_records = []
+                        invoice_items_records = []
+                        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                        for _, r in valid_save.iterrows():
+                            p_name = str(r['product_name']).strip()
+                            s_name = str(r.get('supplier_name') or final_invoice_supplier).strip()
+                            it_no = str(r.get('supplier_item_no', '')).strip()
+                            it_desc = str(r.get('supplier_desc', '')).strip()
+                            p_rmb = round(float(r.get('rmb_price', 0.0)), 3)
+                            pcs = int(r.get('pcs_per_ctn', 0))
+                            ctns = int(r.get('invoiced_ctns', 0))
+                            inv_ref = str(r.get('commercial_invoice', '')).strip() or f"Voucher_{active_v_no}"
+                            mult = float(r.get('landed_multiplier', 0.0))
+
+                            catalog_records.append({
+                                'product_name': p_name,
+                                'supplier_name': s_name,
+                                'supplier_item_no': it_no,
+                                'supplier_desc': it_desc,
+                                'rmb_price': p_rmb,
+                                'pcs_per_ctn': pcs,
+                                'invoice_file': inv_ref,
+                                'matched_at': now_str
+                            })
+
+                            item_key = db.make_item_key(s_name, it_no if it_no else p_name, it_desc)
+                            invoice_items_records.append({
+                                'item_key': item_key,
+                                'supplier_name': s_name,
+                                'supplier_item_no': it_no,
+                                'supplier_desc': it_desc,
+                                'rmb_price': p_rmb,
+                                'pcs_per_ctn': pcs,
+                                'invoiced_qty': int(ctns * pcs) if ctns > 0 and pcs > 0 else int(r.get('voucher_qty', 0)),
+                                'voucher_no': active_v_no,
+                                'landed_multiplier': mult,
+                                'source_invoice': inv_ref,
+                                'matched_product_name': p_name,
+                                'match_type': 'Manual Voucher Match',
+                                'confidence': 1.0,
+                                'is_matched': True
+                            })
+
+                        with st.spinner("Saving commercial attributes to catalog and database..."):
+                            db.upsert_commercial_invoice_items(invoice_items_records)
+                            db.save_product_supplier_mappings(catalog_records)
+
+                        st.success(f"🎉 Successfully saved {len(catalog_records)} commercial item mappings under supplier **`{final_invoice_supplier}`**!")
+                        st.balloons()
+                        st.rerun()
+
+# ---------------------------------------------------------------------------
+# TAB 3: DATABASE ITEMS MATCHER (MANAGEMENT OF EXTRACTED DB ITEMS)
 # ---------------------------------------------------------------------------
 with tab_db_items:
     st.subheader("Commercial Invoice Items Database & Tally Matcher")
