@@ -116,7 +116,7 @@ def load_local_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
         li_df = pd.DataFrame()
     else:
         v_df = pd.concat(v_dfs, ignore_index=True).drop_duplicates(
-            subset=['date', 'voucher_type', 'voucher_no', 'party_name']
+            subset=['date', 'voucher_type', 'voucher_no', 'party_name', 'debit_amount', 'credit_amount']
         )
         li_df = pd.concat(li_dfs, ignore_index=True).drop_duplicates(
             subset=['date', 'voucher_type', 'voucher_no', 'party_name', 'product_name', 'quantity', 'rate']

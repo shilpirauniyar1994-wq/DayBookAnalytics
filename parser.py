@@ -6,6 +6,7 @@ Normalizes hierarchical Tally Day Book exports into clean relational DataFrames.
 import pandas as pd
 import datetime
 import re
+from collections import Counter
 from typing import Tuple, List, Dict, Any, Optional
 
 VOUCHER_CATEGORY_MAP = {
@@ -103,13 +104,79 @@ def aggregate_duplicate_lines(products: List[Dict[str, Any]]) -> List[Dict[str, 
 def parse_daybook(filepath_or_buffer: Any) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Parse a Tally Day Book Excel file into two DataFrames:
-      1. vouchers_df: Header-level voucher records
+      1. vouchers_df: Header-level and compound voucher records with dedicated narrations
       2. line_items_df: Item-level transaction lines
     """
     df = pd.read_excel(filepath_or_buffer, sheet_name=0, header=None)
 
     vouchers: List[Dict[str, Any]] = []
+    line_items: List[Dict[str, Any]] = []
+
     current_voucher: Optional[Dict[str, Any]] = None
+    current_sub_entries: List[Dict[str, Any]] = []
+
+    def finalize_voucher(v_obj: Optional[Dict[str, Any]], sub_entries: List[Dict[str, Any]]):
+        if not v_obj:
+            return
+
+        v_cat = v_obj['voucher_category']
+
+        if v_cat in ('Receipt', 'Payment') and sub_entries:
+            # Handle compound financial vouchers (multi-party receipts/payments)
+            party_counts = Counter()
+            for entry in sub_entries:
+                p_name = entry['party_name']
+                count = party_counts[p_name]
+                party_counts[p_name] += 1
+
+                # If same party appears multiple times in the same voucher, append index (e.g. 28, 28-2)
+                v_num_str = v_obj['voucher_no'] if count == 0 else f"{v_obj['voucher_no']}-{count + 1}"
+                narr = ' | '.join(entry['narration_parts']) if entry['narration_parts'] else None
+
+                vouchers.append({
+                    'date': v_obj['date'],
+                    'miti': v_obj['miti'],
+                    'party_name': p_name,
+                    'voucher_type': v_obj['voucher_type'],
+                    'voucher_category': v_cat,
+                    'voucher_no': str(v_num_str),
+                    'debit_amount': entry['debit_amount'],
+                    'credit_amount': entry['credit_amount'],
+                    'narration': narr,
+                    'month': v_obj['date'].strftime('%Y-%m'),
+                })
+        else:
+            # Sales / Purchase / Other vouchers (standard 1 header -> many products)
+            narr = ' | '.join(v_obj['narration_parts']) if v_obj['narration_parts'] else None
+            vouchers.append({
+                'date': v_obj['date'],
+                'miti': v_obj['miti'],
+                'party_name': v_obj['party_name'],
+                'voucher_type': v_obj['voucher_type'],
+                'voucher_category': v_cat,
+                'voucher_no': str(v_obj['voucher_no']),
+                'debit_amount': v_obj['debit_amount'],
+                'credit_amount': v_obj['credit_amount'],
+                'narration': narr,
+                'month': v_obj['date'].strftime('%Y-%m'),
+            })
+
+            # Line items
+            products = aggregate_duplicate_lines(v_obj['products'])
+            for p in products:
+                line_items.append({
+                    'date': v_obj['date'],
+                    'party_name': v_obj['party_name'],
+                    'voucher_type': v_obj['voucher_type'],
+                    'voucher_category': v_cat,
+                    'voucher_no': str(v_obj['voucher_no']),
+                    'product_name': p['product_name'],
+                    'quantity': p['quantity'],
+                    'rate': p['rate'],
+                    'amount': p['amount'],
+                    'month': v_obj['date'].strftime('%Y-%m'),
+                    'product_group': assign_product_group(p['product_name']),
+                })
 
     for i in range(len(df)):
         row = df.iloc[i]
@@ -122,26 +189,40 @@ def parse_daybook(filepath_or_buffer: Any) -> Tuple[pd.DataFrame, pd.DataFrame]:
         is_vch = pd.notna(col7) and safe_str(col7) not in ('', 'Vch Type')
 
         if is_date and is_vch:
-            if current_voucher:
-                vouchers.append(current_voucher)
+            finalize_voucher(current_voucher, current_sub_entries)
 
             v_date = col0.date() if hasattr(col0, 'date') else col0
             v_type = safe_str(col7)
+            v_cat = classify_voucher_type(v_type)
             v_no = safe_str(row[8], default='0')
             party = safe_str(row[2], default='Unknown')
+            debit = safe_float(row[9])
+            credit = safe_float(row[10])
 
             current_voucher = {
                 'date': v_date,
                 'miti': safe_str(row[1]),
                 'party_name': party,
                 'voucher_type': v_type,
-                'voucher_category': classify_voucher_type(v_type),
+                'voucher_category': v_cat,
                 'voucher_no': v_no,
-                'debit_amount': safe_float(row[9]),
-                'credit_amount': safe_float(row[10]),
+                'debit_amount': debit,
+                'credit_amount': credit,
                 'narration_parts': [],
                 'products': [],
             }
+
+            if v_cat in ('Receipt', 'Payment'):
+                # Initialize first sub-entry for the header party
+                current_sub_entries = [{
+                    'party_name': party,
+                    'debit_amount': debit,
+                    'credit_amount': credit,
+                    'narration_parts': []
+                }]
+            else:
+                current_sub_entries = []
+
             continue
 
         if current_voucher is None:
@@ -156,77 +237,66 @@ def parse_daybook(filepath_or_buffer: Any) -> Tuple[pd.DataFrame, pd.DataFrame]:
         val3 = row[3]
         val4 = row[4]
 
-        # 1. Product line detection:
-        # Col 1 is product name, Col 4 has a numeric amount, Col 2 has quantity
-        if pd.notna(val1) and pd.notna(val4):
-            str1 = safe_str(val1)
-            # Make sure it's not a known non-product row like "On Account" or "Cheque/DD"
-            if str1 not in SKIP_NAMES and not str1.startswith('On Account'):
-                amt = safe_float(val4)
-                # If amount > 0 or qty > 0, it's a product line
-                qty = extract_qty(val2)
-                rate = safe_float(val3)
-                if amt != 0.0 or qty != 0.0:
-                    current_voucher['products'].append({
-                        'product_name': str1,
-                        'quantity': qty,
-                        'rate': rate,
-                        'amount': amt,
-                    })
-                    continue
+        v_cat = current_voucher['voucher_category']
 
-        # 2. Account lines (e.g. 'Purchase A/c' with amount in col 2 or 3)
-        str2 = safe_str(val2)
-        if 'A/c' in str2:
+        if v_cat in ('Receipt', 'Payment'):
+            str2 = safe_str(val2)
+
+            # Check if this row is another party line:
+            # col2 has party name (not Cash, On Account, A/c) and col3 (debit) or col4 (credit) has amount
+            if str2 and str2 not in SKIP_NAMES and not str2.startswith('On Account') and 'A/c' not in str2 and (pd.notna(val3) or pd.notna(val4)):
+                p_deb = safe_float(val3) if v_cat == 'Payment' else 0.0
+                p_crd = safe_float(val4) if v_cat == 'Receipt' else (safe_float(val3) if v_cat == 'Receipt' else 0.0)
+
+                current_sub_entries.append({
+                    'party_name': str2,
+                    'debit_amount': p_deb,
+                    'credit_amount': p_crd,
+                    'narration_parts': []
+                })
+                continue
+
+            # Narration row:
+            # col1 has text, col3 and col4 are empty/NaN
+            if pd.notna(val1) and pd.isna(val4) and pd.isna(val3) and pd.isna(col0):
+                str1 = safe_str(val1)
+                if str1 and str1 not in SKIP_NAMES and not str1.startswith('On Account'):
+                    if current_sub_entries:
+                        current_sub_entries[-1]['narration_parts'].append(str1)
+                    else:
+                        current_voucher['narration_parts'].append(str1)
             continue
 
-        # 3. Narration detection:
-        # Col 1 has text, Col 4 is empty/NaN, not a product line
-        if pd.notna(val1) and pd.isna(val4) and pd.isna(col0):
-            str1 = safe_str(val1)
-            if str1 and str1 not in SKIP_NAMES and not str1.startswith('On Account'):
-                current_voucher['narration_parts'].append(str1)
+        else:
+            # Standard Sales / Purchase / Other voucher processing
+            if pd.notna(val1) and pd.notna(val4):
+                str1 = safe_str(val1)
+                if str1 not in SKIP_NAMES and not str1.startswith('On Account'):
+                    amt = safe_float(val4)
+                    qty = extract_qty(val2)
+                    rate = safe_float(val3)
+                    if amt != 0.0 or qty != 0.0:
+                        current_voucher['products'].append({
+                            'product_name': str1,
+                            'quantity': qty,
+                            'rate': rate,
+                            'amount': amt,
+                        })
+                        continue
 
-    # Append final voucher
-    if current_voucher:
-        vouchers.append(current_voucher)
+            str2 = safe_str(val2)
+            if 'A/c' in str2:
+                continue
 
-    # Build vouchers DataFrame
-    v_records = []
-    for v in vouchers:
-        v_records.append({
-            'date': v['date'],
-            'miti': v['miti'],
-            'party_name': v['party_name'],
-            'voucher_type': v['voucher_type'],
-            'voucher_category': v['voucher_category'],
-            'voucher_no': str(v['voucher_no']),
-            'debit_amount': v['debit_amount'],
-            'credit_amount': v['credit_amount'],
-            'narration': ' | '.join(v['narration_parts']) if v['narration_parts'] else None,
-            'month': v['date'].strftime('%Y-%m'),
-        })
-    vouchers_df = pd.DataFrame(v_records)
+            if pd.notna(val1) and pd.isna(val4) and pd.isna(col0):
+                str1 = safe_str(val1)
+                if str1 and str1 not in SKIP_NAMES and not str1.startswith('On Account'):
+                    current_voucher['narration_parts'].append(str1)
 
-    # Build line items DataFrame
-    li_records = []
-    for v in vouchers:
-        products = aggregate_duplicate_lines(v['products'])
-        for p in products:
-            li_records.append({
-                'date': v['date'],
-                'party_name': v['party_name'],
-                'voucher_type': v['voucher_type'],
-                'voucher_category': v['voucher_category'],
-                'voucher_no': str(v['voucher_no']),
-                'product_name': p['product_name'],
-                'quantity': p['quantity'],
-                'rate': p['rate'],
-                'amount': p['amount'],
-                'month': v['date'].strftime('%Y-%m'),
-                'product_group': assign_product_group(p['product_name']),
-            })
-    line_items_df = pd.DataFrame(li_records)
+    finalize_voucher(current_voucher, current_sub_entries)
+
+    vouchers_df = pd.DataFrame(vouchers)
+    line_items_df = pd.DataFrame(line_items)
 
     return vouchers_df, line_items_df
 
