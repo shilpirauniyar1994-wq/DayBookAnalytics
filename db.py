@@ -140,16 +140,50 @@ def load_local_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     _local_cache['line_items'] = li_df
     return v_df, li_df
 
+def append_to_local_cache(new_v_df: pd.DataFrame, new_li_df: pd.DataFrame):
+    """
+    Safely append newly uploaded vouchers and line items to disk parquet cache without wiping historical data.
+    """
+    global _local_cache
+    v_df, li_df = load_local_data()
+
+    if not new_v_df.empty:
+        if v_df.empty:
+            v_df = new_v_df.copy()
+        else:
+            v_df = pd.concat([v_df, new_v_df], ignore_index=True).drop_duplicates(
+                subset=['date', 'voucher_type', 'voucher_no', 'party_name', 'debit_amount', 'credit_amount']
+            )
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            v_df.to_parquet(VOUCHERS_CACHE_FILE, index=False)
+        except Exception as e:
+            print(f"[db] Error updating vouchers cache: {e}")
+
+    if not new_li_df.empty:
+        from stksum_parser import infer_product_group
+        if 'product_group' not in new_li_df.columns and 'product_name' in new_li_df.columns:
+            new_li_df['product_group'] = new_li_df['product_name'].apply(infer_product_group)
+
+        if li_df.empty:
+            li_df = new_li_df.copy()
+        else:
+            li_df = pd.concat([li_df, new_li_df], ignore_index=True).drop_duplicates(
+                subset=['date', 'voucher_type', 'voucher_no', 'party_name', 'product_name', 'quantity', 'rate']
+            )
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            li_df.to_parquet(LINE_ITEMS_CACHE_FILE, index=False)
+        except Exception as e:
+            print(f"[db] Error updating line items cache: {e}")
+
+    _local_cache['vouchers'] = v_df
+    _local_cache['line_items'] = li_df
+
 def refresh_local_cache():
-    """Clear memory cache and disk parquet cache so daybooks are re-parsed."""
+    """Clear memory cache without deleting historical parquet files."""
     global _local_cache
     _local_cache.clear()
-    for f in [VOUCHERS_CACHE_FILE, LINE_ITEMS_CACHE_FILE]:
-        if os.path.exists(f):
-            try:
-                os.remove(f)
-            except Exception:
-                pass
 
 # ---------------------------------------------------------------------------
 # QUERY FUNCTIONS (Unified across Supabase and Local)
@@ -177,27 +211,43 @@ def fetch_all_from_supabase(table_name: str, order_col: str = 'id', page_size: i
     return pd.DataFrame(all_data) if all_data else pd.DataFrame()
 
 def get_vouchers_df() -> pd.DataFrame:
-    """Retrieve all vouchers across full date history (13,500+ records)."""
+    """Retrieve all vouchers across full date history (44,000+ records)."""
     v_df, _ = load_local_data()
-    if not v_df.empty and len(v_df) > 1000:
+    if not v_df.empty and len(v_df) > 5000:
         return v_df.copy()
     
-    # Cloud fallback if local cache is absent or incomplete
-    cloud_df = fetch_all_from_supabase('vouchers', order_col='date')
-    if not cloud_df.empty:
-        return cloud_df
+    # Cloud fallback if local cache is absent or incomplete (< 5,000 records)
+    if is_supabase_configured():
+        cloud_df = fetch_all_from_supabase('vouchers', order_col='date')
+        if not cloud_df.empty and len(cloud_df) >= len(v_df):
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                cloud_df.to_parquet(VOUCHERS_CACHE_FILE, index=False)
+                _local_cache['vouchers'] = cloud_df
+            except Exception as e:
+                print(f"[db] Warning writing vouchers cache: {e}")
+            return cloud_df
+
     return v_df.copy()
 
 def get_line_items_df() -> pd.DataFrame:
-    """Retrieve all product line items across full history (64,000+ items)."""
+    """Retrieve all product line items across full history (66,000+ items)."""
     _, li_df = load_local_data()
-    if not li_df.empty and len(li_df) > 1000:
+    if not li_df.empty and len(li_df) > 10000:
         return li_df.copy()
 
-    # Cloud fallback if local cache is absent or incomplete
-    cloud_df = fetch_all_from_supabase('line_items', order_col='date')
-    if not cloud_df.empty:
-        return cloud_df
+    # Cloud fallback if local cache is absent or incomplete (< 10,000 records)
+    if is_supabase_configured():
+        cloud_df = fetch_all_from_supabase('line_items', order_col='date')
+        if not cloud_df.empty and len(cloud_df) >= len(li_df):
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                cloud_df.to_parquet(LINE_ITEMS_CACHE_FILE, index=False)
+                _local_cache['line_items'] = cloud_df
+            except Exception as e:
+                print(f"[db] Warning writing line items cache: {e}")
+            return cloud_df
+
     return li_df.copy()
 
 def get_monthly_summary() -> pd.DataFrame:

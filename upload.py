@@ -5,9 +5,25 @@ handling duplicates with composite unique constraints and updating supplier anal
 """
 
 import os
+import math
 import pandas as pd
 from typing import Dict, List, Any, Optional, Callable
 from db import get_client, is_supabase_configured
+
+def clean_float(val, default: float = 0.0) -> float:
+    if val is None or pd.isna(val):
+        return default
+    try:
+        f = float(val)
+        return default if (math.isnan(f) or math.isinf(f)) else f
+    except (ValueError, TypeError):
+        return default
+
+def clean_str(val, default: Optional[str] = None) -> Optional[str]:
+    if val is None or pd.isna(val):
+        return default
+    s = str(val).strip()
+    return default if s in ('', 'nan', 'None', '<NA>') else s
 
 def chunked(items: List[Any], chunk_size: int = 500):
     """Yield successive chunk_size chunks from items."""
@@ -24,18 +40,28 @@ def upload_vouchers(vouchers_df: pd.DataFrame, upload_id: Optional[int] = None) 
         raise ConnectionError("Supabase client is not configured. Please check your .env file.")
 
     records = vouchers_df.to_dict('records')
+    cleaned_records = []
     for r in records:
-        r['date'] = str(r['date'])
-        r['voucher_no'] = str(r['voucher_no']).strip()
-        r['voucher_type'] = str(r['voucher_type']).strip()
-        r['party_name'] = str(r['party_name']).strip()
+        entry = {
+            'date': str(r['date']),
+            'voucher_no': clean_str(r.get('voucher_no'), ''),
+            'voucher_type': clean_str(r.get('voucher_type'), ''),
+            'party_name': clean_str(r.get('party_name'), 'Unknown'),
+            'voucher_category': clean_str(r.get('voucher_category'), 'Other'),
+            'miti': clean_str(r.get('miti')),
+            'narration': clean_str(r.get('narration')),
+            'month': clean_str(r.get('month')),
+            'debit_amount': clean_float(r.get('debit_amount')),
+            'credit_amount': clean_float(r.get('credit_amount')),
+        }
         if upload_id is not None:
-            r['upload_id'] = upload_id
+            entry['upload_id'] = upload_id
+        cleaned_records.append(entry)
 
-    total = len(records)
+    total = len(cleaned_records)
     inserted = 0
 
-    for batch in chunked(records, 500):
+    for batch in chunked(cleaned_records, 500):
         try:
             # ON CONFLICT DO NOTHING (skip existing duplicates, only insert genuinely new vouchers)
             res = client.table('vouchers').upsert(
@@ -47,7 +73,6 @@ def upload_vouchers(vouchers_df: pd.DataFrame, upload_id: Optional[int] = None) 
                 inserted += len(res.data)
         except Exception as e:
             print(f"[Upload] Voucher batch upload note: {e}")
-
 
     skipped = max(0, total - inserted)
     return {'inserted': inserted, 'skipped': skipped, 'total': total}
@@ -97,22 +122,33 @@ def upload_line_items(line_items_df: pd.DataFrame, voucher_id_map: Dict[tuple, i
         raise ConnectionError("Supabase client is not configured.")
 
     records = line_items_df.to_dict('records')
+    cleaned_records = []
     for r in records:
-        r['date'] = str(r['date'])
-        r['voucher_no'] = str(r['voucher_no']).strip()
-        r['voucher_type'] = str(r['voucher_type']).strip()
-        r['party_name'] = str(r['party_name']).strip()
-        r['product_name'] = str(r['product_name']).strip()
-        r['quantity'] = float(r.get('quantity', 0.0))
-        r['rate'] = float(r.get('rate', 0.0))
-        r['amount'] = float(r.get('amount', 0.0))
-        key = (r['date'], r['voucher_type'], r['voucher_no'], r['party_name'])
-        r['voucher_id'] = voucher_id_map.get(key)
+        d_str = str(r['date'])
+        v_type = clean_str(r.get('voucher_type'), '')
+        v_no = clean_str(r.get('voucher_no'), '')
+        p_name = clean_str(r.get('party_name'), 'Unknown')
+        key = (d_str, v_type, v_no, p_name)
 
-    total = len(records)
+        cleaned_records.append({
+            'date': d_str,
+            'voucher_no': v_no,
+            'voucher_type': v_type,
+            'party_name': p_name,
+            'voucher_category': clean_str(r.get('voucher_category'), 'Other'),
+            'product_name': clean_str(r.get('product_name'), ''),
+            'product_group': clean_str(r.get('product_group'), 'Others'),
+            'month': clean_str(r.get('month')),
+            'quantity': clean_float(r.get('quantity')),
+            'rate': clean_float(r.get('rate')),
+            'amount': clean_float(r.get('amount')),
+            'voucher_id': voucher_id_map.get(key)
+        })
+
+    total = len(cleaned_records)
     inserted = 0
 
-    for batch in chunked(records, 500):
+    for batch in chunked(cleaned_records, 500):
         try:
             res = client.table('line_items').upsert(
                 batch,
@@ -121,8 +157,8 @@ def upload_line_items(line_items_df: pd.DataFrame, voucher_id_map: Dict[tuple, i
             ).execute()
             if res.data:
                 inserted += len(res.data)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Upload] Line items batch upload note: {e}")
 
     return {'inserted': inserted, 'total': total}
 
@@ -153,15 +189,19 @@ def update_supplier_products(line_items_df: pd.DataFrame):
     ).reset_index()
 
     records = supplier_agg.to_dict('records')
-
+    cleaned_records = []
     for r in records:
-        r['last_purchase_date'] = str(r['last_purchase_date'])
-        r['last_purchase_rate'] = float(r['last_purchase_rate'])
-        r['avg_purchase_rate'] = round(float(r['avg_purchase_rate']), 2)
-        r['total_qty_purchased'] = float(r['total_qty_purchased'])
-        r['purchase_count'] = int(r['purchase_count'])
+        cleaned_records.append({
+            'supplier_name': clean_str(r.get('supplier_name'), 'Unknown'),
+            'product_name': clean_str(r.get('product_name'), ''),
+            'last_purchase_date': str(r['last_purchase_date']),
+            'last_purchase_rate': clean_float(r.get('last_purchase_rate')),
+            'avg_purchase_rate': round(clean_float(r.get('avg_purchase_rate')), 2),
+            'total_qty_purchased': clean_float(r.get('total_qty_purchased')),
+            'purchase_count': int(clean_float(r.get('purchase_count'))),
+        })
 
-    for batch in chunked(records, 300):
+    for batch in chunked(cleaned_records, 300):
         try:
             client.table('supplier_products').upsert(
                 batch,
@@ -222,6 +262,13 @@ def full_upload_pipeline(
         if progress_callback:
             progress_callback(0.85, "Updating supplier catalog and purchase trends...")
         update_supplier_products(line_items_df)
+
+        # Merge new records into local cache safely
+        try:
+            import db
+            db.append_to_local_cache(vouchers_df, line_items_df)
+        except Exception as e:
+            print(f"[Upload] Local cache append note: {e}")
 
         if progress_callback:
             progress_callback(0.95, "Recording upload history...")
