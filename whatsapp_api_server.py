@@ -23,6 +23,58 @@ except Exception:
 PORT = 5005
 LOCAL_IMAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "HermesData", "assets", "images"))
 
+def build_photo_caption(alt: str, target: str = "") -> str:
+    """
+    Constructs a WhatsApp photo caption with Model Name and rounded Selling Price (e.g. '*360-1* - Rs. 450').
+    Checks alt text for price, and falls back to looking up the product in the live catalog cache.
+    """
+    import math
+    alt = str(alt or '').strip()
+    target_str = str(target or '').strip()
+
+    # 1. Check if price pattern already exists in alt text (e.g. "360-1 - Rs. 450", "360-1 - Rs. 449.65", "Rs 1200")
+    m = re.search(r'(?:[-|—:(]?\s*(?:Rs\.?|₹|NPR)\s*([0-9,]+(?:\.[0-9]+)?)\s*\)?)$', alt, re.I)
+    if not m:
+        m = re.search(r'(?:Rs\.?|₹|NPR)\s*([0-9,]+(?:\.[0-9]+)?)', alt, re.I)
+
+    if m:
+        try:
+            val = int(round(float(m.group(1).replace(',', ''))))
+            name = (alt[:m.start()] + alt[m.end():]).strip(' -|—:()[]')
+            if name:
+                return f"*{name}* - Rs. {val:,}"
+            return f"Rs. {val:,}"
+        except Exception:
+            pass
+
+    # 2. If no price is in alt, look up the item in the catalog cache
+    name = alt.strip(' -|—:()[]')
+    norm_name = re.sub(r'[^a-z0-9]', '', name.lower())
+    target_base = os.path.splitext(os.path.basename(target_str))[0] if target_str else ""
+    norm_target = re.sub(r'[^a-z0-9]', '', target_base.lower())
+
+    try:
+        from hermes_tools import get_cached_catalog
+        catalog = get_cached_catalog()
+        for item in catalog:
+            p_name = str(item.get("product_name") or '')
+            p_norm = re.sub(r'[^a-z0-9]', '', p_name.lower())
+            if (norm_name and norm_name == p_norm) or (norm_target and norm_target == p_norm):
+                sp = item.get("selling_price")
+                if sp is not None and not (isinstance(sp, float) and (math.isnan(sp) or math.isinf(sp))):
+                    val = int(round(float(sp)))
+                    if val > 0:
+                        disp_name = p_name if p_name else name
+                        return f"*{disp_name}* - Rs. {val:,}"
+                break
+    except Exception as e:
+        print(f"[API Server] Catalog caption lookup warning: {e}", flush=True)
+
+    if not name and target_base:
+        name = target_base
+
+    return f"*{name}*" if name else ""
+
 def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Transforms markdown into WhatsApp-friendly text formatting and extracts
@@ -32,7 +84,7 @@ def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, Any
     img_matches = re.findall(r'!\[(.*?)\]\(((?:https?://|local://).*?\.(?:jpe?g|png|webp)|[^\s\)]+)\)', raw_text, re.IGNORECASE)
     images = []
     for alt, target in img_matches:
-        caption = f"*{alt}*" if alt else ""
+        caption = build_photo_caption(alt, target)
         if target.startswith(("http://", "https://")):
             images.append({"url": target, "path": None, "caption": caption})
         elif target.startswith("local://"):
@@ -51,7 +103,8 @@ def format_markdown_for_whatsapp(raw_text: str) -> Tuple[str, List[Dict[str, Any
     if not images:
         raw_urls = re.findall(r'(https?://[^\s\)]+?\.(?:jpg|jpeg|png|webp))', raw_text, re.IGNORECASE)
         for u in raw_urls:
-            images.append({"url": u, "path": None, "caption": ""})
+            caption = build_photo_caption("", u)
+            images.append({"url": u, "path": None, "caption": caption})
 
     text = raw_text
 
@@ -147,7 +200,8 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                     existing_urls = {img["url"] for img in extracted_images if img.get("url")}
                     for u in result.get("image_urls", []):
                         if u not in existing_urls:
-                            extracted_images.append({"url": u, "path": None, "caption": ""})
+                            cap = build_photo_caption("", u)
+                            extracted_images.append({"url": u, "path": None, "caption": cap})
                             existing_urls.add(u)
 
                 print(f"[API Server] Responded with {len(extracted_images)} images via {model_used}", flush=True)
