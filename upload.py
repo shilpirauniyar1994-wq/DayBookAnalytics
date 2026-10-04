@@ -214,7 +214,8 @@ def full_upload_pipeline(
     filepath_or_buffer: Any,
     progress_callback: Optional[Callable[[float, str], None]] = None,
     file_size: int = 0,
-    filename: str = 'DayBook.xlsx'
+    filename: str = 'DayBook.xlsx',
+    sync_bafa: bool = True
 ) -> Dict[str, Any]:
     """
     Execute full ingestion: parse -> record history -> upload vouchers -> upload line items -> update suppliers.
@@ -271,7 +272,7 @@ def full_upload_pipeline(
             print(f"[Upload] Local cache append note: {e}")
 
         if progress_callback:
-            progress_callback(0.95, "Recording upload history...")
+            progress_callback(0.92, "Recording upload history...")
 
         # Update upload_history with final status
         if upload_id:
@@ -289,14 +290,27 @@ def full_upload_pipeline(
         except Exception as e:
             print(f"[Upload] Hermes Knowledge Base sync note: {e}")
 
+        # Keep Bafa App selling prices in sync (+10% markup over DayBook wholesale rate)
+        bafa_result = None
+        if sync_bafa:
+            try:
+                if progress_callback:
+                    progress_callback(0.97, "Syncing selling prices to Bafa App (+10% markup)...")
+                from bafa_sync import execute_sync
+                bafa_result = execute_sync(markup_pct=10.0)
+                print(f"[Upload] Bafa Price Sync: {bafa_result.get('total_updated', 0)} prices updated.")
+            except Exception as e:
+                print(f"[Upload] Bafa Price Sync note: {e}")
+
         if progress_callback:
-            progress_callback(1.0, "Upload and Hermes sync successfully completed!")
+            progress_callback(1.0, "Upload, Hermes sync, and Bafa price sync successfully completed!")
 
         return {
             'vouchers': v_result,
             'line_items': li_result,
             'total_products': line_items_df['product_name'].nunique(),
             'total_suppliers': line_items_df[line_items_df['voucher_category'] == 'Purchase']['party_name'].nunique(),
+            'bafa_sync': bafa_result,
         }
 
     except Exception as e:

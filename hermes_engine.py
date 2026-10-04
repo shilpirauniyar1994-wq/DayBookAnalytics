@@ -257,6 +257,12 @@ def sync_hermes_items(progress_callback: Optional[Callable[[float, str], None]] 
     except Exception:
         pass
 
+    try:
+        from hermes_tools import invalidate_catalog_cache
+        invalidate_catalog_cache()
+    except Exception:
+        pass
+
     if progress_callback:
         progress_callback(1.0, f"Sync complete! {inserted_count} items synchronized.")
 

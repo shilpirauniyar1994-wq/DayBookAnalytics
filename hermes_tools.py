@@ -143,6 +143,13 @@ def get_cached_catalog() -> List[Dict[str, Any]]:
                 return []
     return _catalog_cache
 
+def invalidate_catalog_cache():
+    """Forces cache refresh on next call to get_cached_catalog()."""
+    global _catalog_cache, _catalog_cache_time, _cost_cache
+    _catalog_cache = []
+    _catalog_cache_time = 0
+    _cost_cache = {}
+
 COLLOQUIAL_SYNONYMS = {
     "gudiya": "DOLL",
     "gudya": "DOLL",

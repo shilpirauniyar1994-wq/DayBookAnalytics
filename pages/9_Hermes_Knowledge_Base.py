@@ -118,6 +118,7 @@ with col_sync2:
     st.write("")
     sync_btn = st.button("🚀 Sync Catalog & Stock", type="primary", use_container_width=True)
     photo_sync_btn = st.button("📸 Sync Photos to Supabase", use_container_width=True)
+    bafa_prices_btn = st.button("🏷️ Push Prices to Bafa (+10%)", use_container_width=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -153,6 +154,17 @@ if photo_sync_btn:
             st.rerun()
         except Exception as e:
             st.error(f"❌ **Photo Sync Failed:** {e}")
+
+if bafa_prices_btn:
+    with st.spinner("Synchronizing prices to Bafa Supabase with +10% markup..."):
+        try:
+            from hermes_tools import invalidate_catalog_cache
+            invalidate_catalog_cache()
+            from bafa_sync import execute_sync
+            b_res = execute_sync(markup_pct=10.0)
+            st.success(f"✅ **Bafa Prices Synced!** Updated: {b_res.get('total_updated', 0)} items with +10% markup. Pre-sync snapshot safely saved.")
+        except Exception as e:
+            st.error(f"❌ **Bafa Price Sync Failed:** {e}")
 
 # ---------------------------------------------------------------------------
 # 2. Load Data & Top KPIs

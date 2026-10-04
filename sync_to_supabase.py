@@ -193,7 +193,7 @@ def main():
             if pct_int in (5, 25, 50, 70, 85, 100):
                 print(f"      [{pct_int}%] {msg}")
 
-        res = full_upload_pipeline(f, progress_callback=prog, file_size=sz, filename=fname)
+        res = full_upload_pipeline(f, progress_callback=prog, file_size=sz, filename=fname, sync_bafa=False)
         print(f"   [OK] {fname} Ingested successfully!")
         print(f"      - Vouchers: {res['vouchers']['inserted']} inserted, {res['vouchers']['skipped']} skipped")
         print(f"      - Line Items: {res['line_items']['inserted']} items recorded")
@@ -255,10 +255,21 @@ def main():
     except Exception as e:
         print(f"   -> Hermes sync note: {e}")
 
+    # 10. Sync Bafa Product Catalog Selling Prices (+10% markup)
+    print("\n[Step 10] Synchronizing Bafa Product Catalog Selling Prices (+10% markup)...")
+    try:
+        from hermes_tools import invalidate_catalog_cache
+        invalidate_catalog_cache()
+        from bafa_sync import execute_sync
+        b_summary = execute_sync(markup_pct=10.0)
+        print(f"   -> Bafa Price Sync Complete: {b_summary.get('total_updated', 0)} prices updated!")
+    except Exception as e:
+        print(f"   -> Bafa price sync note: {e}")
+
     print("\n" + "=" * 65)
     print("SUPABASE CLEAN & RE-UPLOAD COMPLETE!")
     print("All DayBook records, vouchers, line items, commercial invoice items,")
-    print("RMB prices, stock balances, categories, and Hermes Knowledge Base are live in Supabase!")
+    print("RMB prices, stock balances, categories, Hermes Knowledge Base, and Bafa selling prices are live in Supabase!")
     print("=" * 65)
 
 if __name__ == '__main__':

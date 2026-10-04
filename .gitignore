@@ -14,3 +14,4 @@ whatsapp_bridge/node_modules/
 whatsapp_bridge/auth_info_baileys/
 whatsapp_bridge/qr.png
 *.zip
+data/bafa_snapshots/

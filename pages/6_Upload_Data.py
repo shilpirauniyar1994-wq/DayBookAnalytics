@@ -91,7 +91,8 @@ with tab_folder:
                             fpath,
                             progress_callback=make_prog_cb(idx, total_files, fname),
                             file_size=sz,
-                            filename=fname
+                            filename=fname,
+                            sync_bafa=False
                         )
                         sync_summary.append({
                             'File': fname,
@@ -109,9 +110,21 @@ with tab_folder:
                             'Line Items': 0
                         })
 
+                # Unified Bafa Price Sync after batch ingestion completes
+                status_text.text("Synchronizing prices with Bafa App (+10% markup)...")
+                bafa_updated = 0
+                try:
+                    from bafa_sync import execute_sync
+                    from hermes_tools import invalidate_catalog_cache
+                    invalidate_catalog_cache()
+                    b_res = execute_sync(markup_pct=10.0)
+                    bafa_updated = b_res.get('total_updated', 0)
+                except Exception as e:
+                    print(f"[Upload Data] Batch Bafa sync note: {e}")
+
                 progress_bar.progress(1.0)
-                status_text.text("All files processed!")
-                st.success("🎉 **Batch Sync Complete!** Review results below:")
+                status_text.text("All files processed and Bafa prices synced!")
+                st.success(f"🎉 **Batch Sync Complete!** Review results below. Bafa App prices synced ({bafa_updated} updated with +10% markup).")
                 st.dataframe(pd.DataFrame(sync_summary), use_container_width=True, hide_index=True)
                 db.refresh_local_cache()
                 st.balloons()
@@ -141,8 +154,9 @@ with tab_folder:
                     def one_prog(pct, msg):
                         p_bar.progress(pct)
                         s_txt.text(msg)
-                    res = full_upload_pipeline(sel_path, progress_callback=one_prog, file_size=os.path.getsize(sel_path), filename=selected_file)
-                    st.success(f"✅ Successfully imported {selected_file}! Inserted: {res['vouchers']['inserted']} vouchers, {res['vouchers']['skipped']} duplicates skipped.")
+                    res = full_upload_pipeline(sel_path, progress_callback=one_prog, file_size=os.path.getsize(sel_path), filename=selected_file, sync_bafa=True)
+                    b_up = res.get('bafa_sync', {}).get('total_updated', 0) if res.get('bafa_sync') else 0
+                    st.success(f"✅ Successfully imported {selected_file}! Inserted: {res['vouchers']['inserted']} vouchers, {res['vouchers']['skipped']} duplicates skipped. Bafa prices synced ({b_up} updated with +10% markup).")
                     db.refresh_local_cache()
 
 # ---------------------------------------------------------------------------
@@ -209,8 +223,9 @@ with tab_upload:
                 def up_cb(pct, msg):
                     prog_bar.progress(pct)
                     stat_text.text(msg)
-                res = full_upload_pipeline(target_path, progress_callback=up_cb, file_size=file_size, filename=uploaded_file.name)
-                st.success(f"✅ Successfully imported {uploaded_file.name}! Vouchers inserted: {res['vouchers']['inserted']}, skipped duplicates: {res['vouchers']['skipped']}")
+                res = full_upload_pipeline(target_path, progress_callback=up_cb, file_size=file_size, filename=uploaded_file.name, sync_bafa=True)
+                b_up = res.get('bafa_sync', {}).get('total_updated', 0) if res.get('bafa_sync') else 0
+                st.success(f"✅ Successfully imported {uploaded_file.name}! Vouchers inserted: {res['vouchers']['inserted']}, skipped duplicates: {res['vouchers']['skipped']}. Bafa prices synced ({b_up} updated with +10% markup).")
                 db.refresh_local_cache()
                 st.balloons()
 
