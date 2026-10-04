@@ -529,6 +529,12 @@ with tab_reconcile:
                             db.upsert_commercial_invoice_items(form_updates)
                             # 2. Save to product_supplier_mappings and propagate to hermes_items
                             db.save_product_supplier_mappings(form_catalog_mappings)
+                            try:
+                                from hermes_tools import invalidate_catalog_cache
+                                invalidate_catalog_cache()
+                            except Exception:
+                                pass
+                            st.cache_data.clear()
 
                         st.success(f"🎉 Successfully saved {len(form_catalog_mappings)} product mappings and synchronized RMB prices!")
                         st.balloons()
@@ -703,7 +709,7 @@ with tab_voucher_matcher:
                         'supplier_name': final_invoice_supplier,
                         'commercial_invoice': init_file,
                         'landed_multiplier': mult,
-                        'save_to_catalog': True if init_rmb > 0 else False
+                        'save_to_catalog': True
                     })
 
                 editor_df = pd.DataFrame(editor_rows)
@@ -821,8 +827,7 @@ with tab_voucher_matcher:
 
                 # Save execution handler
                 if top_save or bottom_save:
-                    rows_to_save = edited_df[edited_df['save_to_catalog'] == True].copy()
-                    valid_save = rows_to_save[rows_to_save['rmb_price'] > 0]
+                    valid_save = edited_df[(edited_df['rmb_price'] > 0) & (edited_df['save_to_catalog'] != False)].copy()
 
                     if valid_save.empty:
                         st.warning("⚠️ No products have a valid RMB Price (> 0) to save. Please enter RMB unit prices.")
@@ -874,6 +879,12 @@ with tab_voucher_matcher:
                         with st.spinner("Saving commercial attributes to catalog and database..."):
                             db.upsert_commercial_invoice_items(invoice_items_records)
                             db.save_product_supplier_mappings(catalog_records)
+                            try:
+                                from hermes_tools import invalidate_catalog_cache
+                                invalidate_catalog_cache()
+                            except Exception:
+                                pass
+                            st.cache_data.clear()
 
                         st.success(f"🎉 Successfully saved {len(catalog_records)} commercial item mappings under supplier **`{final_invoice_supplier}`**!")
                         st.balloons()

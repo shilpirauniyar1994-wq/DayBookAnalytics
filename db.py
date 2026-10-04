@@ -747,24 +747,29 @@ def upsert_commercial_invoice_items(items: List[Dict[str, Any]]) -> Dict[str, in
     client = get_client()
     if client is not None and is_supabase_configured():
         try:
+            VALID_CI_SUPABASE_COLS = {
+                'item_key', 'supplier_name', 'supplier_item_no', 'supplier_desc',
+                'rmb_price', 'pcs_per_ctn', 'source_invoice', 'extracted_at',
+                'tally_product_name', 'is_matched', 'match_confidence', 'match_type', 'matched_at'
+            }
             records = []
             for rec in existing_dict.values():
-                c = rec.copy()
-                if 'id' in c:
-                    del c['id']
+                c = {k: v for k, v in rec.items() if k in VALID_CI_SUPABASE_COLS}
                 records.append(c)
             for i in range(0, len(records), 100):
                 client.table('commercial_invoice_items').upsert(records[i:i+100], on_conflict='item_key').execute()
             if new_history_entries:
+                VALID_HIST_COLS = {
+                    'supplier_name', 'supplier_item_no', 'supplier_desc',
+                    'old_rmb_price', 'new_rmb_price', 'source_invoice', 'updated_at'
+                }
                 h_copy = []
                 for h in new_history_entries:
-                    hc = h.copy()
-                    if 'id' in hc:
-                        del hc['id']
+                    hc = {k: v for k, v in h.items() if k in VALID_HIST_COLS}
                     h_copy.append(hc)
                 client.table('commercial_price_history').insert(h_copy).execute()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[db] Warning syncing commercial_invoice_items to Supabase: {e}")
 
     # Synchronize active product_supplier_mappings for PO Engine
     sync_matched_items_to_catalog()
@@ -790,6 +795,7 @@ def sync_matched_items_to_catalog():
 
     # For each Tally product, take the latest matched record
     matched = matched.sort_values('extracted_at', ascending=True)
+    matched = matched.drop_duplicates(subset=['tally_product_name'], keep='last')
     catalog_records = []
     for _, r in matched.iterrows():
         p_name = r.get('tally_product_name')
@@ -1000,12 +1006,27 @@ def save_product_supplier_mappings(records: List[Dict[str, Any]]):
     client = get_client()
     if client is not None and is_supabase_configured():
         try:
-            client.table('product_supplier_mappings').upsert(
-                records,
-                on_conflict='product_name'
-            ).execute()
-        except Exception:
-            pass
+            VALID_PSM_COLS = {
+                'product_name', 'supplier_name', 'supplier_item_no', 'supplier_desc',
+                'rmb_price', 'pcs_per_ctn', 'invoice_file', 'matched_at'
+            }
+            clean_dict = {}
+            for r in records:
+                p = str(r.get('product_name', '')).strip()
+                if p:
+                    entry = {k: v for k, v in r.items() if k in VALID_PSM_COLS}
+                    if 'matched_at' not in entry or not entry['matched_at']:
+                        entry['matched_at'] = now_str
+                    clean_dict[p] = entry
+            clean_records = list(clean_dict.values())
+
+            for i in range(0, len(clean_records), 100):
+                client.table('product_supplier_mappings').upsert(
+                    clean_records[i:i+100],
+                    on_conflict='product_name'
+                ).execute()
+        except Exception as e:
+            print(f"[db] Warning saving product_supplier_mappings to Supabase: {e}")
 
     # Save to local CSV for offline persistence
     current_df = get_product_supplier_mappings()
@@ -1025,6 +1046,12 @@ def save_product_supplier_mappings(records: List[Dict[str, Any]]):
         p_rmb = r.get('rmb_price')
         if p_name and p_rmb and float(p_rmb) > 0:
             sync_product_rmb_to_hermes(str(p_name), float(p_rmb))
+
+    try:
+        from hermes_tools import invalidate_catalog_cache
+        invalidate_catalog_cache()
+    except Exception:
+        pass
 
 
 
