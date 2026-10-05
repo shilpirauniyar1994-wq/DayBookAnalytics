@@ -10,6 +10,10 @@ __pycache__/
 scratch/
 *.xlsx
 *.csv
+!data/product_groups.csv
+!product_mappings.csv
+!commercial_invoice_items.csv
+!commercial_price_history.csv
 whatsapp_bridge/node_modules/
 whatsapp_bridge/auth_info_baileys/
 whatsapp_bridge/qr.png

@@ -34,6 +34,11 @@ li_df['date_obj'] = li_df['date'].apply(to_date_obj)
 if not v_df.empty:
     v_df['date_obj'] = v_df['date'].apply(to_date_obj)
 
+# Ensure canonical official product group for every line item
+from stksum_parser import infer_product_group, get_product_group_mapping_dict
+pg_map = get_product_group_mapping_dict()
+li_df['product_group'] = li_df['product_name'].apply(lambda p: infer_product_group(p, custom_map=pg_map))
+
 all_valid_dates = pd.concat([li_df['date_obj'].dropna(), v_df['date_obj'].dropna()]).dropna()
 if all_valid_dates.empty:
     st.warning("No valid dates found in transactions.")

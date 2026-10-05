@@ -278,6 +278,24 @@ def get_product_group_mapping_dict() -> Dict[str, str]:
         except Exception:
             pass
 
+    # Check Supabase if local files are absent (e.g. on Railway cloud deployments)
+    try:
+        from db import get_client, is_supabase_configured
+        if is_supabase_configured():
+            client = get_client()
+            if client is not None:
+                res = client.table('product_group_mappings').select('product_name, product_group').execute()
+                for r in res.data:
+                    p = str(r['product_name']).strip().lower()
+                    g = str(r['product_group']).strip()
+                    if p and g:
+                        mapping[p] = g
+                if mapping:
+                    _cached_product_group_map = mapping
+                    return _cached_product_group_map
+    except Exception:
+        pass
+
     _cached_product_group_map = mapping
     return mapping
 
