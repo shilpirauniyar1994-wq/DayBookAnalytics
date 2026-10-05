@@ -30,8 +30,8 @@ RUN cd whatsapp_bridge && npm install --omit=dev && cd ..
 # Copy application source code
 COPY . .
 
-# Ensure start script has executable permissions
-RUN chmod +x start.sh
+# Ensure start script has executable permissions and unix line endings
+RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
 
 # Expose ports for web dashboard
 EXPOSE 8501 8080 7860
