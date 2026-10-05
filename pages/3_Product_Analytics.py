@@ -34,13 +34,13 @@ li_df['date_obj'] = li_df['date'].apply(to_date_obj)
 if not v_df.empty:
     v_df['date_obj'] = v_df['date'].apply(to_date_obj)
 
-valid_dates = li_df['date_obj'].dropna()
-if valid_dates.empty:
-    st.warning("No valid dates found in line items.")
+all_valid_dates = pd.concat([li_df['date_obj'].dropna(), v_df['date_obj'].dropna()]).dropna()
+if all_valid_dates.empty:
+    st.warning("No valid dates found in transactions.")
     st.stop()
 
-global_min_date = valid_dates.min()
-global_max_date = valid_dates.max()
+global_min_date = all_valid_dates.min()
+global_max_date = all_valid_dates.max()
 
 # ---------------------------------------------------------------------------
 # NEPALI CALENDAR MONTH DICTIONARY BUILDER
@@ -157,12 +157,18 @@ else:
     default_start = global_min_date
     default_end = global_max_date
 
+# Safe bounds clamping to prevent StreamlitValueAboveMaxError
+default_start = max(global_min_date, min(default_start, global_max_date))
+default_end = max(global_min_date, min(default_end, global_max_date))
+if default_start > default_end:
+    default_start = default_end
+
 with col_dates:
     chosen_dates = st.date_input(
         "📆 English Date Range",
         value=(default_start, default_end),
         min_value=global_min_date,
-        max_value=global_max_date,
+        max_value=max(global_max_date, default_end),
         key=f"date_range_picker_{selected_nep_month}"
     )
 
