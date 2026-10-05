@@ -446,35 +446,58 @@ st.subheader("🔎 Product Deep Dive")
 if not product_summary.empty:
     prods_list = sorted(product_summary['product_name'].unique().tolist())
     if prods_list:
-        selected_prod = st.selectbox("Select Product to Inspect Details", prods_list)
-        prod_txns = period_sales[period_sales['product_name'] == selected_prod].copy()
+        options = ["All Products"] + prods_list
+        selected_prod = st.selectbox("Select Product to Inspect Details", options)
 
-        d1, d2 = st.columns(2)
-        with d1:
-            if 'month' not in prod_txns.columns or prod_txns['month'].isna().all():
-                prod_txns['month'] = prod_txns['date'].apply(lambda d: d.strftime('%Y-%m') if hasattr(d, 'strftime') else str(d)[:7])
-            monthly_prod = prod_txns.groupby('month').agg(
-                revenue=('amount', 'sum'),
-                qty=('quantity', 'sum')
-            ).reset_index()
+        is_all = (selected_prod == "All Products")
+        if is_all:
+            prod_txns = period_sales.copy()
+        else:
+            prod_txns = period_sales[period_sales['product_name'] == selected_prod].copy()
 
-            fig_m = px.bar(monthly_prod, x='month', y='revenue', title="Monthly Revenue in Period", text_auto='.2s')
-            st.plotly_chart(fig_m, use_container_width=True)
+        if prod_txns.empty:
+            st.info(f"No sales transactions recorded for **{selected_prod}** within the active date period.")
+        else:
+            # Summary Metrics Row for Deep Dive
+            m_rev = prod_txns['amount'].sum()
+            m_qty = prod_txns['quantity'].sum()
+            m_buyers = prod_txns['party_name'].nunique()
+            m_txns = len(prod_txns)
 
-        with d2:
-            st.markdown(f"**Top Customers Buying {selected_prod} in Period**")
-            buyer_agg = prod_txns.groupby('party_name').agg(
-                total_purchased=('quantity', 'sum'),
-                total_spent=('amount', 'sum')
-            ).reset_index().sort_values('total_spent', ascending=False).head(10)
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Scope", "All Products" if is_all else selected_prod)
+            k2.metric("Period Revenue", format_currency(m_rev))
+            k3.metric("Period Qty Sold", format_qty(m_qty))
+            k4.metric("Active Buyers / Sales", f"{m_buyers:,} buyers ({m_txns:,} sales)")
 
-            st.dataframe(
-                buyer_agg,
-                column_config={
-                    'party_name': 'Customer / Buyer',
-                    'total_purchased': st.column_config.NumberColumn('Qty Bought', format='%,.0f'),
-                    'total_spent': st.column_config.NumberColumn('Total (Rs.)', format='Rs. %,.2f'),
-                },
-                use_container_width=True,
-                hide_index=True
-            )
+            d1, d2 = st.columns(2)
+            with d1:
+                if 'month' not in prod_txns.columns or prod_txns['month'].isna().all():
+                    prod_txns['month'] = prod_txns['date'].apply(lambda d: d.strftime('%Y-%m') if hasattr(d, 'strftime') else str(d)[:7])
+                monthly_prod = prod_txns.groupby('month').agg(
+                    revenue=('amount', 'sum'),
+                    qty=('quantity', 'sum')
+                ).reset_index()
+
+                chart_title = "Monthly Revenue Across All Products in Period" if is_all else f"Monthly Revenue for {selected_prod} in Period"
+                fig_m = px.bar(monthly_prod, x='month', y='revenue', title=chart_title, text_auto='.2s')
+                st.plotly_chart(fig_m, use_container_width=True)
+
+            with d2:
+                buyer_title = "**Top Customers Across All Products in Period**" if is_all else f"**Top Customers Buying {selected_prod} in Period**"
+                st.markdown(buyer_title)
+                buyer_agg = prod_txns.groupby('party_name').agg(
+                    total_purchased=('quantity', 'sum'),
+                    total_spent=('amount', 'sum')
+                ).reset_index().sort_values('total_spent', ascending=False).head(10)
+
+                st.dataframe(
+                    buyer_agg,
+                    column_config={
+                        'party_name': 'Customer / Buyer',
+                        'total_purchased': st.column_config.NumberColumn('Qty Bought', format='%,.0f'),
+                        'total_spent': st.column_config.NumberColumn('Total (Rs.)', format='Rs. %,.2f'),
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
