@@ -181,9 +181,10 @@ def append_to_local_cache(new_v_df: pd.DataFrame, new_li_df: pd.DataFrame):
     _local_cache['line_items'] = li_df
 
 def refresh_local_cache():
-    """Clear memory cache without deleting historical parquet files."""
-    global _local_cache
+    """Clear memory cache and trigger immediate fresh sync from Supabase."""
+    global _local_cache, _last_supabase_check
     _local_cache.clear()
+    _last_supabase_check = 0.0
 
 # ---------------------------------------------------------------------------
 # QUERY FUNCTIONS (Unified across Supabase and Local)
@@ -210,8 +211,99 @@ def fetch_all_from_supabase(table_name: str, order_col: str = 'id', page_size: i
             break
     return pd.DataFrame(all_data) if all_data else pd.DataFrame()
 
+_last_supabase_check = 0.0
+
+def sync_incremental_from_supabase(force: bool = False):
+    """
+    Check Supabase for any newly uploaded vouchers or line items beyond the latest cached date.
+    Throttled to run at most once every 60 seconds unless force=True.
+    """
+    global _last_supabase_check, _local_cache
+    import time
+    now = time.time()
+    if not force and (now - _last_supabase_check < 60):
+        return
+
+    _last_supabase_check = now
+    if not is_supabase_configured():
+        return
+
+    client = get_client()
+    if client is None:
+        return
+
+    v_df, li_df = load_local_data()
+
+    # 1. Sync vouchers newer than max cached date
+    if not v_df.empty and 'date' in v_df.columns:
+        max_v = str(v_df['date'].dropna().max())
+        try:
+            offset = 0
+            all_new_v = []
+            while True:
+                res = client.table('vouchers').select('*').gt('date', max_v).order('date').range(offset, offset + 999).execute()
+                if not res.data:
+                    break
+                all_new_v.extend(res.data)
+                if len(res.data) < 1000:
+                    break
+                offset += 1000
+
+            if all_new_v:
+                from po_engine import to_date_obj
+                df_v = pd.DataFrame(all_new_v)
+                df_v['date'] = df_v['date'].apply(to_date_obj)
+                for c in v_df.columns:
+                    if c not in df_v.columns:
+                        df_v[c] = None
+                df_v = df_v[v_df.columns]
+                v_df = pd.concat([v_df, df_v], ignore_index=True).drop_duplicates(
+                    subset=['date', 'voucher_type', 'voucher_no', 'party_name', 'debit_amount', 'credit_amount']
+                )
+                os.makedirs(DATA_DIR, exist_ok=True)
+                v_df.to_parquet(VOUCHERS_CACHE_FILE, index=False)
+                _local_cache['vouchers'] = v_df
+        except Exception as e:
+            print(f"[db] Error syncing incremental vouchers: {e}")
+
+    # 2. Sync line items newer than max cached date
+    if not li_df.empty and 'date' in li_df.columns:
+        max_li = str(li_df['date'].dropna().max())
+        try:
+            offset = 0
+            all_new_li = []
+            while True:
+                res = client.table('line_items').select('*').gt('date', max_li).order('date').range(offset, offset + 999).execute()
+                if not res.data:
+                    break
+                all_new_li.extend(res.data)
+                if len(res.data) < 1000:
+                    break
+                offset += 1000
+
+            if all_new_li:
+                from po_engine import to_date_obj
+                from stksum_parser import infer_product_group
+                df_li = pd.DataFrame(all_new_li)
+                df_li['date'] = df_li['date'].apply(to_date_obj)
+                if 'product_group' not in df_li.columns or df_li['product_group'].isna().all():
+                    df_li['product_group'] = df_li['product_name'].apply(infer_product_group)
+                for c in li_df.columns:
+                    if c not in df_li.columns:
+                        df_li[c] = None
+                df_li = df_li[li_df.columns]
+                li_df = pd.concat([li_df, df_li], ignore_index=True).drop_duplicates(
+                    subset=['date', 'voucher_type', 'voucher_no', 'party_name', 'product_name', 'quantity', 'rate']
+                )
+                os.makedirs(DATA_DIR, exist_ok=True)
+                li_df.to_parquet(LINE_ITEMS_CACHE_FILE, index=False)
+                _local_cache['line_items'] = li_df
+        except Exception as e:
+            print(f"[db] Error syncing incremental line items: {e}")
+
 def get_vouchers_df() -> pd.DataFrame:
     """Retrieve all vouchers across full date history (44,000+ records)."""
+    sync_incremental_from_supabase()
     v_df, _ = load_local_data()
     if not v_df.empty and len(v_df) > 5000:
         return v_df.copy()
@@ -232,6 +324,7 @@ def get_vouchers_df() -> pd.DataFrame:
 
 def get_line_items_df() -> pd.DataFrame:
     """Retrieve all product line items across full history (66,000+ items)."""
+    sync_incremental_from_supabase()
     _, li_df = load_local_data()
     if not li_df.empty and len(li_df) > 10000:
         return li_df.copy()
