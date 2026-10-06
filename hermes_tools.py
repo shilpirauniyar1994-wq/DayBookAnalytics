@@ -515,13 +515,13 @@ def create_tiktok_reel(product_name: str) -> Dict[str, Any]:
         return {
             "status": "success",
             "product_name": p_name,
-            "wholesale_price": price,
+            "pricing": "Wholesale Only (Private — rate hidden from public post)",
             "current_stock": stock,
             "hook": copy_res.get("hook"),
             "caption": copy_res.get("caption"),
             "hashtags": " ".join(copy_res.get("hashtags", [])),
             "video_path": video_res.get("video_path"),
-            "message": f"✅ TikTok 9:16 vertical reel created for '{p_name}' and saved to drafts with viral caption & tags!"
+            "message": f"✅ TikTok 9:16 vertical reel created for '{p_name}' and saved to drafts with viral caption & tags (prices strictly kept private)!"
         }
     except Exception as ex:
         return {

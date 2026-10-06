@@ -73,34 +73,36 @@ def generate_tiktok_copy(
             )
         )
 
-    # 2. Build Gemini prompt
-    price_str = f"Rs. {int(round(price))}" if price and price > 0 else "Best Wholesale Rate"
+    # 2. Build Gemini prompt (Zero Price Disclosure Rule Enforced)
     stock_str = f"{int(round(current_stock))} PCS in stock" if current_stock and current_stock > 0 else "In Stock"
 
     prompt = f"""You are the social media marketing director for Demo Khelauna, a leading wholesale toy and novelty importer located in Kathmandu, Nepal.
-We sell wholesale to toy shops, stationery stores, gift centers, schools, and parents across all 7 provinces of Nepal.
-Contact number for orders: +977 9803216856.
+We sell exclusively wholesale to toy shops, stationery stores, gift centers, schools, and bulk buyers across all 7 provinces of Nepal.
+Contact number for orders & price inquiries: +977 9803216856.
 
 Generate an engaging, viral, policy-compliant TikTok post copy for this product:
 - Product Name: {product_name}
 - Category: {category or 'General Toys'}
-- Wholesale Price: {price_str}
 - Stock Availability: {stock_str}
 - Extra Notes: {custom_notes or 'New arrival, wholesale bulk carton discounts available'}
 
-RULES:
-1. STRICT TIKTOK COMPLIANCE: Do NOT mention guns, weapons, warfare, or violence.
-2. Tone: Exciting, energetic, trustworthy wholesale business. Use natural mix of English and popular Nepali terms (e.g. 'Dhamaka rate', 'Kathmandu ma wholesale', 'Delivery across Nepal').
-3. Audience: Toy store retailers & parents looking for wholesale toy rates.
+CRITICAL RULES:
+1. CONFIDENTIALITY - ZERO NUMERIC PRICE DISCLOSURE:
+   NEVER mention numeric prices, figures, or rates (e.g., do NOT write 'Rs. 450', 'Rs. 850', or any monetary number).
+   Wholesale prices are strictly confidential to protect retail shop margins.
+   Always instruct retailers and buyers to contact on WhatsApp (+977 9803216856) for wholesale rate sheets and bulk quotes.
+2. STRICT TIKTOK COMPLIANCE: Do NOT mention guns, weapons, warfare, or violence.
+3. Tone: Exciting, energetic, trustworthy wholesale business. Use natural mix of English and popular Nepali terms (e.g. 'Kathmandu ma wholesale', 'Bulk carton discount', 'Delivery across Nepal').
+4. Audience: Toy store retailers, gift shop owners, and parents looking for wholesale toy inquiries.
 
 Respond strictly in valid JSON with this format:
 {{
-  "hook": "Short punchy 1-line hook (max 7 words)",
-  "caption": "Full caption with product highlights, wholesale call-to-action, and phone number (max 30 words)",
+  "hook": "Short punchy 1-line hook (max 7 words, NO NUMERIC PRICES)",
+  "caption": "Full caption with product highlights, wholesale call-to-action, and phone number (max 30 words, NO NUMERIC PRICES)",
   "hashtags": ["#demokhelauna", "#toysnepal", "#wholesaletoynepal", "#kathmandutoys", ...],
   "overlay_badges": [
-    "Short 3-4 word phrase for slide 1",
-    "Short 3-4 word phrase for slide 2 (e.g. Wholesale Rs. XXX)",
+    "Short 3-4 word phrase for slide 1 (e.g. Demo Khelauna Wholesale)",
+    "Short 3-4 word phrase for slide 2 (e.g. Wholesale Only 🏷️)",
     "Short 3-4 word phrase for slide 3 (e.g. WhatsApp 9803216856)"
   ]
 }}
@@ -110,7 +112,7 @@ Respond strictly in valid JSON with this format:
         from google import genai
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            return _fallback_copy(product_name, price_str)
+            return _fallback_copy(product_name)
 
         client = genai.Client(api_key=api_key)
         model_candidates = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
@@ -146,25 +148,25 @@ Respond strictly in valid JSON with this format:
             "hashtags": data.get("hashtags", DEFAULT_HASHTAGS),
             "overlay_badges": data.get("overlay_badges", [
                 "Demo Khelauna Wholesale",
-                f"Wholesale: {price_str}",
+                "Wholesale Only 🏷️",
                 f"WhatsApp: {DEFAULT_CONTACT}"
             ])
         }
 
     except Exception as e:
         logger.warning(f"Gemini copy generation failed: {e}. Using fallback.")
-        return _fallback_copy(product_name, price_str)
+        return _fallback_copy(product_name)
 
 
-def _fallback_copy(product_name: str, price_str: str) -> Dict[str, Any]:
+def _fallback_copy(product_name: str) -> Dict[str, Any]:
     return {
         "hook": f"🔥 New Arrival: {product_name}!",
-        "caption": f"Top quality {product_name} available at Demo Khelauna! Best wholesale prices in Kathmandu. Delivery all over Nepal 🚚. WhatsApp orders: {DEFAULT_CONTACT}",
+        "caption": f"Top quality {product_name} available at Demo Khelauna! Wholesale inquiries welcome. Delivery all over Nepal 🚚. WhatsApp for wholesale rates: {DEFAULT_CONTACT}",
         "hashtags": DEFAULT_HASHTAGS,
         "overlay_badges": [
             "Demo Khelauna Wholesale",
-            f"Wholesale: {price_str}",
-            f"Order: {DEFAULT_CONTACT}"
+            "Wholesale Only 🏷️",
+            f"WhatsApp: {DEFAULT_CONTACT}"
         ]
     }
 
@@ -241,7 +243,6 @@ def render_single_frame(
     product_img: Image.Image,
     scale: float,
     product_name: str,
-    price_text: str,
     overlay_badge: str,
     brand_title: str = DEFAULT_BRAND,
     contact_text: str = DEFAULT_CONTACT
@@ -312,15 +313,18 @@ def render_single_frame(
     font_name = _get_font(32, bold=True)
     draw.text((50, card_top + 30), product_name[:32], fill=(20, 20, 20), font=font_name)
 
-    # Wholesale Price Pill
-    font_price = _get_font(38, bold=True)
-    draw.text((50, card_top + 80), price_text, fill=(0, 140, 50), font=font_price)
+    # Wholesale Tag Badge (Strict Zero-Price-Disclosure to protect retailer margins)
+    font_badge_tag = _get_font(32, bold=True)
+    draw.text((50, card_top + 76), "WHOLESALE ONLY 🏷️", fill=(0, 130, 45), font=font_badge_tag)
+
+    font_sub = _get_font(20, bold=False)
+    draw.text((50, card_top + 120), "DM / WhatsApp for Rate Sheet & Bulk Catalog", fill=(75, 85, 99), font=font_sub)
 
     # In Stock Badge
     font_stock = _get_font(20, bold=True)
-    stock_rect = [OUTPUT_WIDTH - 210, card_top + 80, OUTPUT_WIDTH - 50, card_top + 120]
+    stock_rect = [OUTPUT_WIDTH - 210, card_top + 76, OUTPUT_WIDTH - 50, card_top + 116]
     draw.rounded_rectangle(stock_rect, radius=15, fill=(220, 245, 220))
-    draw.text((OUTPUT_WIDTH - 130, card_top + 100), "IN STOCK 📦", fill=(20, 120, 30), font=font_stock, anchor="mm")
+    draw.text((OUTPUT_WIDTH - 130, card_top + 96), "IN STOCK 📦", fill=(20, 120, 30), font=font_stock, anchor="mm")
 
     # 5. FOOTER CALL-TO-ACTION (WhatsApp & Delivery)
     footer_rect = [30, OUTPUT_HEIGHT - 100, OUTPUT_WIDTH - 30, OUTPUT_HEIGHT - 40]
@@ -385,11 +389,10 @@ def render_vertical_reel(
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    # 4. Prepare text elements
-    price_text = f"Wholesale: Rs. {int(round(price))}" if price and price > 0 else "Best Wholesale Rate"
+    # 4. Prepare text elements (Strict zero-price disclosure policy)
     badges = overlay_badges or [
         "DEMO KHELAUNA WHOLESALE",
-        f"{price_text}",
+        "WHOLESALE ONLY 🏷️",
         f"WHATSAPP: {DEFAULT_CONTACT}"
     ]
 
@@ -417,7 +420,6 @@ def render_vertical_reel(
                     product_img=p_img,
                     scale=zoom_scale,
                     product_name=product_name,
-                    price_text=price_text,
                     overlay_badge=current_badge
                 )
 

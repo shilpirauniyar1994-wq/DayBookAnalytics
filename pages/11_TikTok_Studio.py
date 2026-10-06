@@ -200,11 +200,10 @@ with tab_create:
                         st.success(f"✅ **TikTok Compliant**: Verified safe for promotion ({status_reason}).")
 
                     if selected_photo_url:
-                        st.image(selected_photo_url, caption=f"{selected_product} | Rs. {int(round(prod_price))}", width=220)
+                        st.image(selected_photo_url, caption=f"{selected_product} | Wholesale Only 🏷️", width=220)
             else:
                 st.info("No catalog loaded. Enter product details manually below.")
                 selected_product = st.text_input("Product Name:", "360-1 RC Stunt Car")
-                prod_price = st.number_input("Wholesale Price (Rs.):", min_value=0.0, value=850.0)
 
         elif post_mode == "📸 Photo Carousel":
             st.info("Create a swipeable photo post for TikTok.")
@@ -217,13 +216,15 @@ with tab_create:
             selected_product = st.text_input("Product Featured:", "RC Drone With Dual Camera")
             uploaded_video = st.file_uploader("Upload Video (MP4/MOV, 9:16 vertical):", type=["mp4", "mov"])
 
+        st.caption("🔒 **Price Privacy Guard**: Wholesale rates are strictly hidden from TikTok videos & public captions to protect your retailers' profit margins.")
+
         st.markdown("---")
         st.subheader("2. AI Copywriting & Settings")
-        custom_notes = st.text_input("Custom Promotion Angle / Notes:", placeholder="e.g. Festival wholesale special, 10% carton discount")
+        custom_notes = st.text_input("Custom Promotion Angle / Notes:", placeholder="e.g. Festival wholesale special, bulk carton discounts")
 
         if st.button("✨ Generate Viral Copy with Gemini AI", use_container_width=True):
             if selected_product:
-                with st.spinner("Gemini is generating high-converting TikTok copy..."):
+                with st.spinner("Gemini is generating high-converting TikTok copy (no public prices)..."):
                     try:
                         copy_data = generate_tiktok_copy(
                             product_name=selected_product,
@@ -242,7 +243,7 @@ with tab_create:
 
         # Editable Caption Fields
         hook_val = st.session_state.get("tt_hook", f"🔥 New Arrival: {selected_product or 'Demo Khelauna'}!")
-        caption_val = st.session_state.get("tt_caption", f"Wholesale toys available in Kathmandu! Delivery all over Nepal. Orders: +977 9803216856")
+        caption_val = st.session_state.get("tt_caption", f"Wholesale toys available in Kathmandu! Delivery all over Nepal. Wholesale inquiries: +977 9803216856")
         hashtags_val = st.session_state.get("tt_hashtags", "#demokhelauna #toysnepal #wholesaletoynepal #kathmandutoys")
 
         edit_hook = st.text_input("On-Screen Video Hook:", value=hook_val)
@@ -263,7 +264,7 @@ with tab_create:
                 st.warning("Please select or enter a product first.")
             else:
                 image_src = selected_photo_url or "HermesData/assets/images/006-6 Pull Line Car.jpg"
-                badges_to_use = [edit_hook, f"Wholesale: Rs. {int(round(prod_price))}", "WhatsApp: +977 9803216856"]
+                badges_to_use = [edit_hook, "WHOLESALE ONLY 🏷️", "WhatsApp: +977 9803216856"]
 
                 with st.spinner("Rendering 9:16 dynamic reel with Ken Burns zoom & branding..."):
                     try:
