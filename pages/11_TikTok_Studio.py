@@ -112,6 +112,27 @@ def load_tiktok_catalog():
     return pd.DataFrame()
 
 
+def get_clean_image_source(raw_url: Any, product_name: str = "") -> Optional[str]:
+    """Returns valid string image URL or local file path, or None if invalid/missing/NaN."""
+    if raw_url is not None and not pd.isna(raw_url):
+        raw_str = str(raw_url).strip()
+        if raw_str and raw_str.lower() not in ["none", "nan", "null", ""]:
+            return raw_str
+
+    # Fallback to local image index in HermesData/assets/images
+    try:
+        from hermes_tools import resolve_product_image, LOCAL_IMAGE_DIR
+        resolved = resolve_product_image(product_name, None)
+        if resolved and resolved.startswith("local://"):
+            local_name = resolved.replace("local://", "")
+            local_path = os.path.join(LOCAL_IMAGE_DIR, local_name)
+            if os.path.exists(local_path):
+                return local_path
+    except Exception:
+        pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # HEADER & TOP STATUS BAR
 # ---------------------------------------------------------------------------
@@ -185,7 +206,8 @@ with tab_create:
                 if prod_choice:
                     row = catalog_df[catalog_df['product_name'] == prod_choice].iloc[0]
                     selected_product = str(row['product_name'])
-                    selected_photo_url = row.get('image_url')
+                    raw_photo = row.get('image_url')
+                    selected_photo_url = get_clean_image_source(raw_photo, selected_product)
                     prod_price = float(row.get('selling_price', row.get('catalog_price', 0)) or 0)
                     is_safe = bool(row.get('tiktok_safe', True))
                     status_reason = str(row.get('tiktok_reason', ''))
@@ -201,6 +223,8 @@ with tab_create:
 
                     if selected_photo_url:
                         st.image(selected_photo_url, caption=f"{selected_product} | Wholesale Only 🏷️", width=220)
+                    else:
+                        st.info("📷 No photo attached in catalog for this item. Using default showroom visual.")
             else:
                 st.info("No catalog loaded. Enter product details manually below.")
                 selected_product = st.text_input("Product Name:", "360-1 RC Stunt Car")
