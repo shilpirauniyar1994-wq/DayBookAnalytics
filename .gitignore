@@ -19,3 +19,6 @@ whatsapp_bridge/auth_info_baileys/
 whatsapp_bridge/qr.png
 *.zip
 data/bafa_snapshots/
+data/tiktok_renders/
+*.mp4
+data/tiktok_credentials.json

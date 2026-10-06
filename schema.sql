@@ -262,3 +262,44 @@ CREATE INDEX IF NOT EXISTS idx_hermes_prod ON hermes_items(product_name);
 CREATE INDEX IF NOT EXISTS idx_hermes_stock ON hermes_items(current_stock);
 CREATE INDEX IF NOT EXISTS idx_hermes_tags ON hermes_items(tags);
 CREATE INDEX IF NOT EXISTS idx_hermes_group ON hermes_items(product_group);
+
+-- ============================================
+-- TABLE 15: tiktok_credentials (OAuth Tokens & Account Info)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tiktok_credentials (
+    id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    open_id             TEXT NOT NULL UNIQUE,
+    union_id            TEXT,
+    display_name        TEXT,
+    avatar_url          TEXT,
+    access_token        TEXT NOT NULL,
+    refresh_token       TEXT NOT NULL,
+    expires_at          TIMESTAMPTZ NOT NULL,
+    refresh_expires_at  TIMESTAMPTZ NOT NULL,
+    scope               TEXT,
+    updated_at          TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tiktok_openid ON tiktok_credentials(open_id);
+
+-- ============================================
+-- TABLE 16: tiktok_posts (Post Queue, Published History & Safety Audit)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tiktok_posts (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    publish_id          TEXT,
+    post_type           TEXT CHECK (post_type IN ('video', 'photo_carousel')),
+    title               TEXT,
+    caption             TEXT,
+    hashtags            TEXT[],
+    media_urls          TEXT[],
+    privacy_level       TEXT DEFAULT 'PUBLIC_TO_EVERYONE',
+    destination         TEXT DEFAULT 'DIRECT_POST', -- 'DIRECT_POST' or 'DRAFT_INBOX'
+    safety_status       TEXT DEFAULT 'SAFE',        -- 'SAFE', 'WARNING', 'BLOCKED'
+    safety_details      JSONB,
+    status              TEXT DEFAULT 'draft',       -- 'draft', 'rendering', 'uploading', 'published', 'failed'
+    error_message       TEXT,
+    created_at          TIMESTAMPTZ DEFAULT now(),
+    published_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_tiktok_posts_status ON tiktok_posts(status);
+CREATE INDEX IF NOT EXISTS idx_tiktok_posts_created ON tiktok_posts(created_at DESC);

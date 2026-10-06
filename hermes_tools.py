@@ -446,3 +446,85 @@ def get_popular_tags(limit: int = 10) -> List[Dict[str, Any]]:
                 tag_counts[clean_t] = tag_counts.get(clean_t, 0) + 1
     sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
     return [{"tag": t, "item_count": c} for t, c in sorted_tags[:limit]]
+
+def create_tiktok_reel(product_name: str) -> Dict[str, Any]:
+    """
+    Generate an automated vertical 9:16 TikTok reel and viral marketing copy for a product,
+    saving it to TikTok drafts. Strictly enforces TikTok Community Guidelines (blocks toy guns/weapons).
+
+    Args:
+        product_name: The name or code of the product to create a TikTok reel for (e.g. '360-1', 'RC Car').
+    """
+    from tiktok_safety import evaluate_post_safety
+    from tiktok_engine import generate_tiktok_copy, render_vertical_reel
+    from tiktok_client import TikTokPolicyViolationError
+
+    # 1. Search product in inventory
+    search_res = search_products(search_term=product_name, in_stock_only=False, limit=1)
+    items = search_res.get("items", [])
+    if not items:
+        return {
+            "status": "not_found",
+            "message": f"Could not find product matching '{product_name}' in inventory to create a TikTok reel."
+        }
+
+    item = search_res["items"][0]
+    p_name = item.get("product_name", product_name)
+    price = float(item.get("selling_price", 0) or 0)
+    stock = float(item.get("current_stock", 0) or 0)
+    img_url = item.get("image_url") or ""
+
+    # Resolve local or cloud image
+    resolved_img = resolve_product_image(p_name, img_url)
+    if resolved_img and resolved_img.startswith("local://"):
+        local_filename = resolved_img.replace("local://", "")
+        resolved_img = os.path.join(LOCAL_IMAGE_DIR, local_filename)
+
+    # 2. Safety evaluation
+    safety = evaluate_post_safety(
+        product_name=p_name,
+        tags=item.get("tags", ""),
+        image_input=resolved_img if resolved_img and os.path.exists(resolved_img) else None,
+        skip_vision=False
+    )
+
+    if not safety.is_safe:
+        return {
+            "status": "policy_blocked",
+            "product_name": p_name,
+            "message": (
+                f"🚨 TIKTOK POLICY SHIELD TRIGGERED: Cannot create TikTok reel for '{p_name}'. "
+                f"Reason: {safety.user_guidance}. Imitation firearms and toy weapons are strictly "
+                "banned under TikTok Community Guidelines to prevent account strikes."
+            )
+        }
+
+    # 3. Generate Copy & Video
+    try:
+        copy_res = generate_tiktok_copy(product_name=p_name, price=price, current_stock=stock)
+        img_source = resolved_img if resolved_img and os.path.exists(resolved_img) else "HermesData/assets/images/006-6 Pull Line Car.jpg"
+
+        video_res = render_vertical_reel(
+            image_sources=[img_source],
+            product_name=p_name,
+            price=price,
+            current_stock=stock,
+            overlay_badges=copy_res.get("overlay_badges")
+        )
+
+        return {
+            "status": "success",
+            "product_name": p_name,
+            "wholesale_price": price,
+            "current_stock": stock,
+            "hook": copy_res.get("hook"),
+            "caption": copy_res.get("caption"),
+            "hashtags": " ".join(copy_res.get("hashtags", [])),
+            "video_path": video_res.get("video_path"),
+            "message": f"✅ TikTok 9:16 vertical reel created for '{p_name}' and saved to drafts with viral caption & tags!"
+        }
+    except Exception as ex:
+        return {
+            "status": "error",
+            "message": f"Failed to generate TikTok reel for '{p_name}': {str(ex)}"
+        }

@@ -12,7 +12,7 @@ from typing import Dict, Any
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from hermes_tools import search_products, get_product_costing
+from hermes_tools import search_products, get_product_costing, create_tiktok_reel
 
 load_dotenv()
 
@@ -28,17 +28,19 @@ def get_gemini_client():
     return _client
 
 SYSTEM_INSTRUCTION = """You are Hermes, the intelligent inventory, catalog, and sales assistant for Demo Khelauna (Wholesale Toys & Party Supplies).
-Your job is to look up live stock levels, wholesale prices, share product photos, and look up costing from our Supabase database.
+Your job is to look up live stock levels, wholesale prices, share product photos, look up costing, and create marketing reels for TikTok from our Supabase database.
 
 Rules:
 1. TOOL CALLING:
    - When the user asks for items, stock, prices, or photos, call `search_products`.
    - When the user explicitly asks for "cost", "costing", "purchase rate", "purchase price", "kharcha", "RMB price", "factory price", or "supplier rate", call `get_product_costing(product_name=...)`.
+   - When the user asks to create or post a TikTok reel or video (e.g. "make a TikTok reel for 360-1", "create reel for RC car", "TikTok post banaideu"), call `create_tiktok_reel(product_name=...)`.
    - Default search limit is 15. If the user asks for "all" items or a broad catalog list, specify `limit=20` or `limit=25`.
    - Example: If user asks for "RC items" or "give me rc item photos", call `search_products(search_term="RC", has_photo_only=True, limit=15)`.
    - Example: If user asks for "all mala items", call `search_products(search_term="MALA", has_photo_only=True, limit=25)`.
    - Example: If user asks for "360-1", call `search_products(search_term="360-1")`.
    - Example: If user asks "What is the cost of 360-1?" or "Costing for RC car" or "360-1 ko costing kati ho", call `get_product_costing(product_name="360-1")`.
+   - Example: If user asks "Make a TikTok video for 360-1", call `create_tiktok_reel(product_name="360-1")`.
 
 2. PHOTO RENDERING & CATALOG PRESENTATION (CONDITIONAL):
    - VERY IMPORTANT: Photos should ONLY be included if the user explicitly requested photos, pictures, or images (or words like 'photo', 'pic', 'foto', 'tasbir', etc.).
@@ -150,7 +152,7 @@ def ask_hermes(user_message: str) -> Dict[str, Any]:
                 model=model_name,
                 contents=user_message,
                 config=types.GenerateContentConfig(
-                    tools=[search_products, get_product_costing],
+                    tools=[search_products, get_product_costing, create_tiktok_reel],
                     system_instruction=SYSTEM_INSTRUCTION,
                 )
             )
