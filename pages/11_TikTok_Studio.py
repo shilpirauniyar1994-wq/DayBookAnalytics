@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import time
+import requests
 from typing import Dict, Any, List, Optional
 import streamlit as st
 import pandas as pd
@@ -162,8 +163,9 @@ with col_head2:
 # ---------------------------------------------------------------------------
 # TABS
 # ---------------------------------------------------------------------------
-tab_create, tab_scanner, tab_connect, tab_history = st.tabs([
+tab_create, tab_broadcast, tab_scanner, tab_connect, tab_history = st.tabs([
     "🎬 Create Post & Reels",
+    "📢 50 Slow-Moving Broadcast Pack",
     "🛡️ Policy Safety Scanner",
     "🔗 Connect TikTok Account",
     "📊 Post History & Queue"
@@ -173,6 +175,34 @@ tab_create, tab_scanner, tab_connect, tab_history = st.tabs([
 # TAB 1: CREATE POST & REELS
 # ===========================================================================
 with tab_create:
+    # Daily 9:00 AM Automation Status Card
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%); border-radius: 12px; padding: 16px 20px; color: white; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <h4 style="margin: 0; color: #38BDF8; font-size: 1.1rem;">⏰ Daily 9:00 AM TikTok Concierge (Active)</h4>
+                <p style="margin: 4px 0 0 0; color: #94A3B8; font-size: 0.9rem;">
+                    Every morning at 09:00 AM (Asia/Kathmandu), the system automatically picks an in-stock, policy-safe toy, renders a vertical 9:16 reel, and delivers it with a ready-to-copy caption to <b>+977 9851155318</b> via WhatsApp.
+                </p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_auto1, col_auto2 = st.columns([3, 1.2])
+    with col_auto1:
+        st.caption("🔄 Runs via Windows Scheduled Task ('DayBook_TikTok_Daily_9AM') & Antigravity Sidecar Automation.")
+    with col_auto2:
+        if st.button("⚡ Run 9:00 AM Dispatch Now", use_container_width=True):
+            with st.spinner("Executing full 9:00 AM pipeline (Product pick, copy, reel render, WhatsApp dispatch)..."):
+                try:
+                    from daily_tiktok_dispatch import run_daily_tiktok_dispatch
+                    auto_res = run_daily_tiktok_dispatch()
+                    st.success(f"🎉 Successfully dispatched daily reel for *{auto_res['product_name']}* to WhatsApp (+977 9851155318)!")
+                except Exception as auto_ex:
+                    st.error(f"Daily dispatch error: {auto_ex}")
+
+    st.markdown("---")
     catalog_df = load_tiktok_catalog()
 
     col_cfg, col_preview = st.columns([1, 1], gap="large")
@@ -310,8 +340,38 @@ with tab_create:
         rendered_path = st.session_state.get("rendered_video_path")
         if rendered_path and os.path.exists(rendered_path):
             st.video(rendered_path)
+            st.markdown("#### 🚀 Publish & Dispatch")
+            dispatch_phone = st.text_input(
+                "Recipient WhatsApp Number:",
+                value=os.getenv("TIKTOK_MANUAL_DISPATCH_PHONE", "+9779851155318")
+            )
+
             col_d1, col_d2 = st.columns(2)
             with col_d1:
+                if st.button("📲 Send Reel to My WhatsApp", type="primary", use_container_width=True):
+                    clean_caption = f"{edit_hook}\n\n{edit_caption}\n\n{edit_tags}"
+                    with st.spinner(f"Transmitting reel and caption to {dispatch_phone}..."):
+                        try:
+                            payload = {
+                                "to": dispatch_phone,
+                                "video_path": rendered_path,
+                                "caption": f"🎵 *Daily TikTok Reel Ready!* ({selected_product})\nSave video to Gallery and copy the text bubble below to post on TikTok in seconds!",
+                                "follow_up_text": f"📋 *TIKTOK CAPTION READY TO POST (Tap & Copy)*:\n\n{clean_caption}\n\n━━━━━━━━━━━━━━━━━━━━\n👉 Open TikTok → (+) Upload → Select Video → Paste Caption → Post! 🚀"
+                            }
+                            r = requests.post("http://127.0.0.1:5006/send", json=payload, timeout=45)
+                            if r.status_code == 200 and r.json().get("success", False):
+                                st.success(f"🎉 Reel and copy delivered to WhatsApp ({dispatch_phone})!")
+                                st.balloons()
+                            else:
+                                err_msg = r.text if r else "Connection failed"
+                                st.warning(f"Bridge notice: {err_msg}. Ensure WhatsApp Bridge is active on port 5006.")
+                        except Exception as de:
+                            st.error(f"WhatsApp Dispatch failed: {de}")
+                            import urllib.parse
+                            encoded_txt = urllib.parse.quote(f"TikTok Reel ready for {selected_product}!\n\n{clean_caption}")
+                            st.markdown(f"👉 **[Click Here to Open WhatsApp Web / App directly](https://wa.me/{dispatch_phone.replace('+', '')}?text={encoded_txt})**")
+
+            with col_d2:
                 with open(rendered_path, "rb") as vf:
                     st.download_button(
                         label="⬇️ Download Reel MP4",
@@ -320,9 +380,11 @@ with tab_create:
                         mime="video/mp4",
                         use_container_width=True
                     )
-            with col_d2:
-                if st.button("🎵 Upload to TikTok", type="primary", use_container_width=True):
-                    with st.spinner("Uploading to TikTok with Community Guidelines compliance..."):
+
+            with st.expander("🎵 Direct TikTok API Upload (Developer Sandbox / Fallback)", expanded=False):
+                st.caption("Direct publishing via TikTok Content Posting API is currently subject to developer approval / sandbox constraints.")
+                if st.button("Submit to TikTok Developer API", use_container_width=True):
+                    with st.spinner("Attempting TikTok Developer API publish..."):
                         try:
                             destination_flag = "DRAFT_INBOX" if "Drafts" in dest_choice else "DIRECT_POST"
                             pub_res = publish_video(
@@ -332,18 +394,96 @@ with tab_create:
                                 product_name=selected_product or ""
                             )
                             st.success(f"🎉 Successfully uploaded to TikTok! Publish ID: {pub_res.get('publish_id')}")
-                        except TikTokAuthError as ae:
-                            st.warning(f"TikTok Authentication Notice: {ae}\n(Visit 'Connect TikTok Account' tab to link your account or verify Developer Sandbox tokens).")
-                        except TikTokPolicyViolationError as pve:
-                            st.error(f"🚨 Pre-flight Safety Blocked Publish: {pve}")
                         except Exception as pe:
-                            st.error(f"Upload error: {pe}")
+                            st.error(f"TikTok API Notice: {pe}")
         else:
             st.info("Render a video reel or upload content to preview it here.")
 
 
 # ===========================================================================
-# TAB 2: POLICY SAFETY SCANNER (TOY GUN & WEAPON SHIELD)
+# TAB 2: 50 SLOW-MOVING BROADCAST PACK
+# ===========================================================================
+with tab_broadcast:
+    st.subheader("📢 Slow-Moving Inventory Broadcast Pack (50 Items Across 5 Categories)")
+    st.markdown(
+        "Picks **10 top slow-moving items with verified photos** from **General**, **Big Toys**, **Fancy Toys**, **Indian Item**, and **Birthday Items**.\n\n"
+        "• **Bubble A (Photo Message)**: Customer-safe (Item #, Product Name, Category, Order CTA). **NO stock counts, NO cost figures** are on the photo.\n"
+        "• **Bubble B (Separate Text)**: Confidential reference with **Costing**, **Current Stock**, **Wholesale Selling Rate**, and **Unit Margin**."
+    )
+
+    col_bc_ctrl1, col_bc_ctrl2 = st.columns([2, 1])
+    with col_bc_ctrl1:
+        cat_filter = st.selectbox(
+            "Select Category Filter:",
+            ["All 5 Categories (50 Items)", "General", "Big Toys", "Fancy Toys", "Indian Item", "Birthday Items"]
+        )
+    with col_bc_ctrl2:
+        bc_phone = st.text_input(
+            "Broadcast Destination Phone:",
+            value=os.getenv("TIKTOK_MANUAL_DISPATCH_PHONE", "+9779851155318")
+        )
+
+    try:
+        from broadcast_slow_moving import get_slow_moving_broadcast_items, dispatch_item_to_whatsapp, is_bridge_connected
+        with st.spinner("Loading 50 slow-moving items with verified photos & costing..."):
+            all_bc_items = get_slow_moving_broadcast_items(items_per_category=10)
+    except Exception as bc_load_err:
+        st.error(f"Error loading broadcast items: {bc_load_err}")
+        all_bc_items = []
+
+    selected_bc_items = all_bc_items
+    if cat_filter != "All 5 Categories (50 Items)":
+        selected_bc_items = [it for it in all_bc_items if it["category"].lower() == cat_filter.lower()]
+
+    m_b1, m_b2, m_b3, m_b4 = st.columns(4)
+    m_b1.metric("Items Selected", f"{len(selected_bc_items)} Items")
+    total_stk = sum(it.get("est_stock", 0) for it in selected_bc_items)
+    m_b2.metric("Total Stuck Stock", f"{total_stk:,.0f} PCS")
+    bridge_ok = is_bridge_connected()
+    m_b3.metric("WhatsApp Bridge", "🟢 Online" if bridge_ok else "🔴 Offline (Port 5006)")
+    m_b4.metric("Destination", bc_phone)
+
+    st.markdown("---")
+
+    col_send_btn, col_blank = st.columns([2, 1])
+    with col_send_btn:
+        if st.button(f"🚀 Dispatch {len(selected_bc_items)} Slow-Moving Photos to {bc_phone}", type="primary", use_container_width=True):
+            if not bridge_ok:
+                st.error("WhatsApp Bridge is not online or not connected. Please ensure node in whatsapp_bridge/bridge_server.js is running.")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                success_count = 0
+                for idx, item in enumerate(selected_bc_items):
+                    status_text.text(f"Delivering Item #{item['item_index']:02d}: {item['product_name']} ({item['category']})...")
+                    ok = dispatch_item_to_whatsapp(bc_phone, item)
+                    if ok:
+                        success_count += 1
+                    progress_bar.progress((idx + 1) / len(selected_bc_items))
+                    time.sleep(2.5)
+                st.success(f"🎉 Successfully dispatched {success_count}/{len(selected_bc_items)} photo packages to WhatsApp (+{bc_phone})!")
+
+    # Table preview
+    with st.expander("📋 Review Selected 50 Items, Costing & Captions", expanded=True):
+        if selected_bc_items:
+            preview_data = []
+            for it in selected_bc_items:
+                preview_data.append({
+                    "Item #": f"#{it['item_index']:02d}",
+                    "Category": it["category"],
+                    "Product Name": it["product_name"],
+                    "Stock (PCS)": int(round(it["est_stock"])),
+                    "Purchase Cost": f"Rs. {it['cost_price']:,.2f}" if it.get('cost_price') else "N/A",
+                    "Wholesale Rate": f"Rs. {it['selling_price']:,.2f}" if it.get('selling_price') else "N/A",
+                    "Unit Margin": f"Rs. {it['margin']:,.2f} ({it['margin_pct']}%)" if it.get('margin') else "N/A",
+                    "Days Unsold": "Never Sold" if it['days_since_sale'] >= 9999 else f"{it['days_since_sale']}d",
+                    "Supplier": it.get("last_supplier", "")
+                })
+            st.dataframe(pd.DataFrame(preview_data), use_container_width=True)
+
+
+# ===========================================================================
+# TAB 3: POLICY SAFETY SCANNER (TOY GUN & WEAPON SHIELD)
 # ===========================================================================
 with tab_scanner:
     st.subheader("🛡️ TikTok Community Guidelines Safety Pre-Screening")
@@ -407,7 +547,7 @@ with tab_scanner:
 
 
 # ===========================================================================
-# TAB 3: CONNECT TIKTOK ACCOUNT (OAUTH 2.0 PKCE)
+# TAB 4: CONNECT TIKTOK ACCOUNT (OAUTH 2.0 PKCE)
 # ===========================================================================
 with tab_connect:
     st.subheader("🔗 TikTok Developer App & Account Link")
@@ -473,7 +613,7 @@ with tab_connect:
 
 
 # ===========================================================================
-# TAB 4: POST HISTORY & AUDIT LOG
+# TAB 5: POST HISTORY & AUDIT LOG
 # ===========================================================================
 with tab_history:
     st.subheader("📊 Published Posts & Audit Log")

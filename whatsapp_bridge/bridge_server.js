@@ -18,18 +18,142 @@ const QRCode = require('qrcode');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const net = require('net');
+const http = require('http');
 
-// Single-instance lock on port 5006 to prevent duplicate processes
+// Outbound Dispatch & Status API on Port 5006 (also acts as single-instance lock)
 const LOCK_PORT = 5006;
-const lockServer = net.createServer();
-lockServer.once('error', (err) => {
+let sock = null;
+
+const httpServer = http.createServer(async (req, res) => {
+    // Enable CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
+        return;
+    }
+
+    const parsedUrl = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+
+    if (req.method === 'GET' && (parsedUrl.pathname === '/status' || parsedUrl.pathname === '/health')) {
+        let currentStatus = { status: 'offline', qr_available: false };
+        try {
+            if (fs.existsSync(STATUS_FILE)) {
+                currentStatus = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf-8'));
+            }
+        } catch (_) {}
+        currentStatus.is_connected = !!(sock && sock.user);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(currentStatus));
+        return;
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/send') {
+        let body = '';
+        let tooLarge = false;
+
+        req.on('data', chunk => {
+            body += chunk;
+            if (body.length > 10 * 1024 * 1024) { // 10 MB payload cap
+                tooLarge = true;
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Payload too large (max 10MB)' }));
+                req.destroy();
+            }
+        });
+
+        req.on('end', async () => {
+            if (tooLarge) return;
+            try {
+                const payload = JSON.parse(body || '{}');
+                const to = payload.to || '';
+                const text = payload.text || '';
+                const videoPath = payload.video_path || null;
+                const imagePath = payload.image_path || null;
+                const caption = payload.caption || '';
+                const followUpText = payload.follow_up_text || payload.copy_text || null;
+
+                if (!to) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: 'Recipient phone number (to) is required.' }));
+                    return;
+                }
+
+                if (!sock || !sock.user) {
+                    res.writeHead(503, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        success: false,
+                        error: 'WhatsApp Bridge is not connected. Please pair or wait for connection.'
+                    }));
+                    return;
+                }
+
+                const cleanPhone = to.replace(/[^0-9]/g, '');
+                const jid = cleanPhone.endsWith('@s.whatsapp.net') ? cleanPhone : `${cleanPhone}@s.whatsapp.net`;
+
+                console.log(`[Bridge Outbound] Sending dispatch to +${cleanPhone}...`);
+
+                // 1. Send Video (Async Non-Blocking Read)
+                if (videoPath && fs.existsSync(videoPath)) {
+                    console.log(`[Bridge Outbound] Sending video: ${videoPath}`);
+                    const videoBuf = await fs.promises.readFile(videoPath);
+                    await sock.sendMessage(jid, {
+                        video: videoBuf,
+                        caption: caption,
+                        mimetype: 'video/mp4'
+                    });
+                }
+                // 2. Send Image (Async Non-Blocking Read)
+                else if (imagePath && fs.existsSync(imagePath)) {
+                    console.log(`[Bridge Outbound] Sending photo: ${imagePath}`);
+                    const mime = imagePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+                    const imgBuf = await fs.promises.readFile(imagePath);
+                    await sock.sendMessage(jid, {
+                        image: imgBuf,
+                        caption: caption,
+                        mimetype: mime
+                    });
+                }
+                // 3. Send Text
+                else if (text) {
+                    await sock.sendMessage(jid, { text: text });
+                }
+
+                // 4. Send follow-up clean copy text if provided
+                if (followUpText) {
+                    await new Promise(resolve => setTimeout(resolve, 600));
+                    console.log(`[Bridge Outbound] Sending separate reference/copy text bubble to +${cleanPhone}...`);
+                    await sock.sendMessage(jid, { text: followUpText });
+                }
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, message: 'Dispatched successfully' }));
+
+            } catch (dispatchErr) {
+                console.error('[Bridge Outbound] Error sending dispatch:', dispatchErr.message);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: dispatchErr.message }));
+            }
+        });
+        return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Endpoint not found' }));
+});
+
+httpServer.once('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-        console.log('[Bridge] Another instance of bridge_server.js is already running. Exiting duplicate process.');
+        console.log('[Bridge] Another instance of bridge_server.js is already running on port 5006. Exiting duplicate process.');
         process.exit(0);
     }
 });
-lockServer.listen(LOCK_PORT, '127.0.0.1');
+httpServer.listen(LOCK_PORT, '127.0.0.1', () => {
+    console.log(`[Bridge] Outbound Dispatch & Status API listening on http://127.0.0.1:${LOCK_PORT}`);
+});
 
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
 const QR_FILE = path.join(__dirname, 'qr.png');
@@ -91,8 +215,6 @@ function logMessage(entry) {
         console.error('Error updating message log:', e.message);
     }
 }
-
-let sock = null;
 
 async function startBridge() {
     console.log('[Bridge] Starting WhatsApp Multi-Device connection...');
