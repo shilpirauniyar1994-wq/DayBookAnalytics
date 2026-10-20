@@ -7,13 +7,16 @@ APP_PORT="${PORT:-8501}"
 mkdir -p /app/whatsapp_bridge/auth_info_baileys
 chmod -R 777 /app/whatsapp_bridge/auth_info_baileys || true
 
-echo "=== [1/3] Starting Hermes WhatsApp API Server (Port 5005) ==="
+echo "=== [1/4] Starting Hermes WhatsApp API Server (Port 5005) ==="
 python3 whatsapp_api_server.py &
 
-echo "=== [2/3] Starting WhatsApp Baileys Bridge Server ==="
+echo "=== [2/4] Starting WhatsApp Baileys Bridge Server ==="
 (cd whatsapp_bridge && node bridge_server.js) &
 
-echo "=== [3/3] Starting Streamlit Dashboard (Port $APP_PORT) ==="
+echo "=== [3/4] Starting 24/7 Cloud Daily Scheduler (09:00 AM Kathmandu) ==="
+python3 cloud_scheduler.py &
+
+echo "=== [4/4] Starting Streamlit Dashboard (Port $APP_PORT) ==="
 exec python3 -m streamlit run app.py \
     --server.port "$APP_PORT" \
     --server.address 0.0.0.0 \
