@@ -404,35 +404,43 @@ with tab_create:
 # TAB 2: 50 SLOW-MOVING BROADCAST PACK
 # ===========================================================================
 with tab_broadcast:
-    st.subheader("📢 Slow-Moving Inventory Broadcast Pack (50 Items Across 5 Categories)")
+    st.subheader("📢 Slow-Moving Inventory Broadcast Pack (5 Items Per Category)")
     st.markdown(
-        "Picks **10 top slow-moving items with verified photos** from **General**, **Big Toys**, **Fancy Toys**, **Indian Item**, and **Birthday Items**.\n\n"
-        "• **Bubble A (Photo Message)**: Customer-safe (Item #, Product Name, Category, Order CTA). **NO stock counts, NO cost figures** are on the photo.\n"
+        "Picks **5 top slow-moving items with verified photos** from **General**, **Big Toys**, **Fancy Toys**, **Indian Item**, and **Birthday Items** (25 items total).\n\n"
+        "• **Bubble A (Photo Message)**: Customer-safe (Item #, Product Name, Category, Order CTA). **NO stock counts, NO cost figures** on photo.\n"
         "• **Bubble B (Separate Text)**: Confidential reference with **Costing**, **Current Stock**, **Wholesale Selling Rate**, and **Unit Margin**."
     )
 
-    col_bc_ctrl1, col_bc_ctrl2 = st.columns([2, 1])
+    col_bc_ctrl1, col_bc_ctrl2, col_bc_ctrl3 = st.columns([1.5, 1.5, 1])
     with col_bc_ctrl1:
         cat_filter = st.selectbox(
             "Select Category Filter:",
-            ["All 5 Categories (50 Items)", "General", "Big Toys", "Fancy Toys", "Indian Item", "Birthday Items"]
+            ["All 5 Categories", "General", "Big Toys", "Fancy Toys", "Indian Item", "Birthday Items"]
         )
     with col_bc_ctrl2:
         bc_phone = st.text_input(
             "Broadcast Destination Phone:",
             value=os.getenv("TIKTOK_MANUAL_DISPATCH_PHONE", "+9779851155318")
         )
+    with col_bc_ctrl3:
+        items_per_group = st.number_input(
+            "Items Per Group:",
+            min_value=1,
+            max_value=20,
+            value=5,
+            step=1
+        )
 
     try:
         from broadcast_slow_moving import get_slow_moving_broadcast_items, dispatch_item_to_whatsapp, is_bridge_connected
-        with st.spinner("Loading 50 slow-moving items with verified photos & costing..."):
-            all_bc_items = get_slow_moving_broadcast_items(items_per_category=10)
+        with st.spinner(f"Loading {items_per_group} items per category with verified photos & costing..."):
+            all_bc_items = get_slow_moving_broadcast_items(items_per_category=int(items_per_group))
     except Exception as bc_load_err:
         st.error(f"Error loading broadcast items: {bc_load_err}")
         all_bc_items = []
 
     selected_bc_items = all_bc_items
-    if cat_filter != "All 5 Categories (50 Items)":
+    if cat_filter != "All 5 Categories":
         selected_bc_items = [it for it in all_bc_items if it["category"].lower() == cat_filter.lower()]
 
     m_b1, m_b2, m_b3, m_b4 = st.columns(4)
@@ -460,11 +468,11 @@ with tab_broadcast:
                     if ok:
                         success_count += 1
                     progress_bar.progress((idx + 1) / len(selected_bc_items))
-                    time.sleep(2.5)
+                    time.sleep(3.0)
                 st.success(f"🎉 Successfully dispatched {success_count}/{len(selected_bc_items)} photo packages to WhatsApp (+{bc_phone})!")
 
     # Table preview
-    with st.expander("📋 Review Selected 50 Items, Costing & Captions", expanded=True):
+    with st.expander("📋 Review Selected Items, Costing & Captions", expanded=True):
         if selected_bc_items:
             preview_data = []
             for it in selected_bc_items:

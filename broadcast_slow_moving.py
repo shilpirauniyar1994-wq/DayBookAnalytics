@@ -1,6 +1,6 @@
 """
-Broadcast Slow-Moving Inventory Pack (50 Products Across 5 Categories)
-Picks 10 top slow-moving items with verified high-res photos from:
+Broadcast Slow-Moving Inventory Pack (25 Products: 5 Per Group Across 5 Categories)
+Picks top slow-moving items (default: 5 per group) with verified high-res photos from:
   1. General (#01 - #10)
   2. Big Toys (#11 - #20)
   3. Fancy Toys (#21 - #30)
@@ -67,7 +67,7 @@ def resolve_local_or_remote_image(image_spec: Optional[str]) -> Optional[str]:
     return None
 
 
-def get_slow_moving_broadcast_items(items_per_category: int = 10) -> List[Dict[str, Any]]:
+def get_slow_moving_broadcast_items(items_per_category: int = 5) -> List[Dict[str, Any]]:
     """
     Computes stock aging and extracts `items_per_category` slow-moving items with verified photos
     for each target category, enriched with cost price, current stock, and wholesale selling price.
@@ -149,8 +149,9 @@ def get_slow_moving_broadcast_items(items_per_category: int = 10) -> List[Dict[s
         it["last_supplier"] = last_supplier
 
         # Format Customer-Safe Photo Caption (Bubble A) - STRICTLY NO STOCK, NO COST
+        total_items_count = len(all_selected)
         it["photo_caption"] = (
-            f"📸 [{it['category']} | Item #{it['item_index']:02d}/50]\n"
+            f"📸 [{it['category']} | Item #{it['item_index']:02d}/{total_items_count:02d}]\n"
             f"*{it['product_name']}*\n"
             f"💬 Wholesale Carton Inquiries & Booking:\n"
             f"👉 WhatsApp: +977 9803216856"
@@ -206,14 +207,14 @@ def dispatch_item_to_whatsapp(to_phone: str, item: Dict[str, Any]) -> bool:
         return False
 
 
-def send_broadcast_pack(recipient: str = DEFAULT_RECIPIENT, category_filter: Optional[str] = None):
-    """Executes full transmission of the 50 slow-moving items in category batches."""
+def send_broadcast_pack(recipient: str = DEFAULT_RECIPIENT, category_filter: Optional[str] = None, items_per_category: int = 5):
+    """Executes full transmission of slow-moving items (default: 5 per category) in category batches."""
     print("=" * 65)
     print(f"🚀 DEMO KHELAUNA — SLOW-MOVING INVENTORY BROADCAST DISPATCH")
-    print(f"Recipient: {recipient}")
+    print(f"Recipient: {recipient} | Items Per Group: {items_per_category}")
     print("=" * 65)
 
-    items = get_slow_moving_broadcast_items(items_per_category=10)
+    items = get_slow_moving_broadcast_items(items_per_category=items_per_category)
     if category_filter:
         items = [it for it in items if it["category"].lower() == category_filter.lower()]
         print(f"Filtered for category '{category_filter}': {len(items)} items.")
@@ -237,10 +238,11 @@ def send_broadcast_pack(recipient: str = DEFAULT_RECIPIENT, category_filter: Opt
         # Category announcement header
         if it["category"] != current_cat:
             current_cat = it["category"]
-            cat_header = f"🚀 *CATEGORY BATCH: {current_cat.upper()}* (10 Items)\n━━━━━━━━━━━━━━━━━━━━"
+            items_in_cat = len([x for x in items if x["category"] == current_cat])
+            cat_header = f"🚀 *CATEGORY BATCH: {current_cat.upper()}* ({items_in_cat} Items)\n━━━━━━━━━━━━━━━━━━━━"
             try:
                 requests.post(BRIDGE_SEND_URL, json={"to": recipient, "text": cat_header}, timeout=15)
-                time.sleep(1.0)
+                time.sleep(2.0)
             except Exception:
                 pass
 
@@ -252,8 +254,8 @@ def send_broadcast_pack(recipient: str = DEFAULT_RECIPIENT, category_filter: Opt
         else:
             print(" ❌ Failed")
 
-        # Pacing to prevent WhatsApp rate throttling
-        time.sleep(2.5)
+        # Pacing to prevent WhatsApp rate throttling & Signal ratchet desync
+        time.sleep(3.0)
 
     print("\n" + "=" * 65)
     print(f"🎉 BROADCAST COMPLETE: {success_count}/{len(items)} items delivered to {recipient}!")
@@ -266,14 +268,15 @@ if __name__ == "__main__":
     parser.add_argument("--send", action="store_true", help="Send items directly to WhatsApp")
     parser.add_argument("--to", type=str, default=DEFAULT_RECIPIENT, help="Target recipient phone number")
     parser.add_argument("--category", type=str, default=None, help="Specific category filter")
+    parser.add_argument("--limit-per-group", type=int, default=5, help="Number of items per category (default: 5)")
 
     args = parser.parse_args()
 
     if args.send:
-        send_broadcast_pack(recipient=args.to, category_filter=args.category)
+        send_broadcast_pack(recipient=args.to, category_filter=args.category, items_per_category=args.limit_per_group)
     else:
         # Default to preview
-        items = get_slow_moving_broadcast_items(items_per_category=10)
+        items = get_slow_moving_broadcast_items(items_per_category=args.limit_per_group)
         if args.category:
             items = [it for it in items if it["category"].lower() == args.category.lower()]
 

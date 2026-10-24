@@ -24,6 +24,39 @@ const http = require('http');
 const LOCK_PORT = 5006;
 let sock = null;
 
+
+// In-memory message store for Signal Protocol retries & session ratchet sync
+// Prevents 'Waiting for this message. This may take a while.'
+const messageStore = new Map();
+
+function saveMessageToStore(key, message) {
+    if (!key || !key.id || !message) return;
+    messageStore.set(key.id, message);
+    if (messageStore.size > 2000) {
+        const oldestKey = messageStore.keys().next().value;
+        messageStore.delete(oldestKey);
+    }
+}
+
+// Memory-backed retry counter cache for Baileys
+const msgRetryCounterCache = {
+    _cache: new Map(),
+    get(key) { return this._cache.get(key); },
+    set(key, val) { this._cache.set(key, val); },
+    del(key) { this._cache.delete(key); },
+    delete(key) { this._cache.delete(key); }
+};
+
+// Safe wrapper to send messages and record them for retry requests
+async function safeSendMessage(targetJid, content, options = {}) {
+    if (!sock) throw new Error('WhatsApp bridge socket is not ready.');
+    const sent = await sock.sendMessage(targetJid, content, options);
+    if (sent && sent.key && sent.key.id && sent.message) {
+        saveMessageToStore(sent.key, sent.message);
+    }
+    return sent;
+}
+
 const httpServer = http.createServer(async (req, res) => {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -92,15 +125,22 @@ const httpServer = http.createServer(async (req, res) => {
                 }
 
                 const cleanPhone = to.replace(/[^0-9]/g, '');
-                const jid = cleanPhone.endsWith('@s.whatsapp.net') ? cleanPhone : `${cleanPhone}@s.whatsapp.net`;
+                let targetJid = cleanPhone.endsWith('@s.whatsapp.net') ? cleanPhone : `${cleanPhone}@s.whatsapp.net`;
+                try {
+                    const [lookup] = await sock.onWhatsApp(cleanPhone);
+                    if (lookup && lookup.exists && lookup.jid) {
+                        targetJid = lookup.jid;
+                        console.log(`[Bridge Outbound] Resolved verified WhatsApp JID: ${targetJid}`);
+                    }
+                } catch (_) {}
 
-                console.log(`[Bridge Outbound] Sending dispatch to +${cleanPhone}...`);
+                console.log(`[Bridge Outbound] Sending dispatch to ${targetJid}...`);
 
                 // 1. Send Video (Async Non-Blocking Read)
                 if (videoPath && fs.existsSync(videoPath)) {
                     console.log(`[Bridge Outbound] Sending video: ${videoPath}`);
                     const videoBuf = await fs.promises.readFile(videoPath);
-                    await sock.sendMessage(jid, {
+                    await safeSendMessage(targetJid, {
                         video: videoBuf,
                         caption: caption,
                         mimetype: 'video/mp4'
@@ -111,7 +151,7 @@ const httpServer = http.createServer(async (req, res) => {
                     console.log(`[Bridge Outbound] Sending photo: ${imagePath}`);
                     const mime = imagePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
                     const imgBuf = await fs.promises.readFile(imagePath);
-                    await sock.sendMessage(jid, {
+                    await safeSendMessage(targetJid, {
                         image: imgBuf,
                         caption: caption,
                         mimetype: mime
@@ -119,14 +159,14 @@ const httpServer = http.createServer(async (req, res) => {
                 }
                 // 3. Send Text
                 else if (text) {
-                    await sock.sendMessage(jid, { text: text });
+                    await safeSendMessage(targetJid, { text: text });
                 }
 
-                // 4. Send follow-up clean copy text if provided
+                // 4. Send follow-up clean copy text with Signal handshake delay
                 if (followUpText) {
-                    await new Promise(resolve => setTimeout(resolve, 600));
-                    console.log(`[Bridge Outbound] Sending separate reference/copy text bubble to +${cleanPhone}...`);
-                    await sock.sendMessage(jid, { text: followUpText });
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    console.log(`[Bridge Outbound] Sending separate reference/copy text bubble to ${targetJid}...`);
+                    await safeSendMessage(targetJid, { text: followUpText });
                 }
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -242,6 +282,13 @@ async function startBridge() {
         browser: ['DayBook Hermes', 'Desktop', '1.0.0'],
         syncFullHistory: false,
         generateHighQualityLinkPreview: true,
+        msgRetryCounterCache,
+        getMessage: async (key) => {
+            if (key && key.id && messageStore.has(key.id)) {
+                return messageStore.get(key.id);
+            }
+            return undefined;
+        }
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -330,6 +377,13 @@ async function startBridge() {
     });
 
     sock.ev.on('messages.upsert', async (m) => {
+        // Track all incoming & outgoing messages into store for retry challenges
+        for (const msg of m.messages || []) {
+            if (msg.key && msg.key.id && msg.message) {
+                saveMessageToStore(msg.key, msg.message);
+            }
+        }
+
         if (m.type !== 'notify') return;
 
         for (const msg of m.messages) {

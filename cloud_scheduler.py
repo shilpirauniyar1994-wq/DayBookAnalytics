@@ -27,6 +27,7 @@ KATHMANDU_TZ = timezone(timedelta(hours=5, minutes=45))
 TARGET_PHONE = os.getenv("TIKTOK_MANUAL_DISPATCH_PHONE", "+9779851155318")
 DISPATCH_TIME = os.getenv("DAILY_DISPATCH_TIME", "09:00")  # HH:MM format
 DISPATCH_MODE = os.getenv("DAILY_DISPATCH_MODE", "photos")  # "photos", "video", or "both"
+ITEMS_PER_GROUP = int(os.getenv("BROADCAST_ITEMS_PER_GROUP", "5"))  # 5 items per group default
 FLAG_FILE = os.path.join(os.path.dirname(__file__), "data", "trigger_broadcast.flag")
 
 
@@ -50,10 +51,10 @@ def execute_daily_dispatch():
     # 1. Slow-Moving Photos Broadcast Pack
     if DISPATCH_MODE in ["photos", "both"]:
         try:
-            logger.info("Starting 50 Slow-Moving Photos Broadcast Pack dispatch...")
+            logger.info(f"Starting Slow-Moving Photos Broadcast Pack dispatch ({ITEMS_PER_GROUP} items per group = {ITEMS_PER_GROUP * 5} total)...")
             import broadcast_slow_moving
-            broadcast_slow_moving.send_broadcast_pack(recipient=TARGET_PHONE)
-            logger.info("✅ 50 Slow-Moving Photos Broadcast Pack dispatched successfully!")
+            broadcast_slow_moving.send_broadcast_pack(recipient=TARGET_PHONE, items_per_category=ITEMS_PER_GROUP)
+            logger.info(f"✅ Slow-Moving Photos Broadcast Pack ({ITEMS_PER_GROUP} per group) dispatched successfully!")
         except Exception as e:
             logger.error(f"❌ Failed to dispatch Photos Broadcast Pack: {e}", exc_info=True)
 
@@ -75,6 +76,7 @@ def scheduler_loop():
     logger.info(f"   Target Phone : {TARGET_PHONE}")
     logger.info(f"   Scheduled At : {DISPATCH_TIME} AM (Asia/Kathmandu)")
     logger.info(f"   Mode         : {DISPATCH_MODE}")
+    logger.info(f"   Items/Group  : {ITEMS_PER_GROUP} items (Total: {ITEMS_PER_GROUP * 5})")
     logger.info("=======================================================")
 
     last_dispatched_date: Optional[str] = None
