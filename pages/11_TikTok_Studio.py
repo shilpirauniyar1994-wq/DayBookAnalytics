@@ -441,7 +441,9 @@ with tab_broadcast:
 
     selected_bc_items = all_bc_items
     if cat_filter != "All 5 Categories":
+        from broadcast_slow_moving import reindex_broadcast_items
         selected_bc_items = [it for it in all_bc_items if it["category"].lower() == cat_filter.lower()]
+        selected_bc_items = reindex_broadcast_items(selected_bc_items)
 
     m_b1, m_b2, m_b3, m_b4 = st.columns(4)
     m_b1.metric("Items Selected", f"{len(selected_bc_items)} Items")

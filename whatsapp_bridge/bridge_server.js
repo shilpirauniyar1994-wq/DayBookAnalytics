@@ -136,9 +136,9 @@ const httpServer = http.createServer(async (req, res) => {
 
                 console.log(`[Bridge Outbound] Sending dispatch to ${targetJid}...`);
 
-                // 1. Send Video (Async Non-Blocking Read)
+                // 1. Send Video (Async Non-Blocking Read or Remote URL)
                 if (videoPath && fs.existsSync(videoPath)) {
-                    console.log(`[Bridge Outbound] Sending video: ${videoPath}`);
+                    console.log(`[Bridge Outbound] Sending local video: ${videoPath}`);
                     const videoBuf = await fs.promises.readFile(videoPath);
                     await safeSendMessage(targetJid, {
                         video: videoBuf,
@@ -146,15 +146,30 @@ const httpServer = http.createServer(async (req, res) => {
                         mimetype: 'video/mp4'
                     });
                 }
-                // 2. Send Image (Async Non-Blocking Read)
+                else if (videoPath && (videoPath.startsWith('http://') || videoPath.startsWith('https://'))) {
+                    console.log(`[Bridge Outbound] Sending remote video: ${videoPath}`);
+                    await safeSendMessage(targetJid, {
+                        video: { url: videoPath },
+                        caption: caption,
+                        mimetype: 'video/mp4'
+                    });
+                }
+                // 2. Send Image (Async Non-Blocking Read or Remote URL)
                 else if (imagePath && fs.existsSync(imagePath)) {
-                    console.log(`[Bridge Outbound] Sending photo: ${imagePath}`);
+                    console.log(`[Bridge Outbound] Sending local photo: ${imagePath}`);
                     const mime = imagePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
                     const imgBuf = await fs.promises.readFile(imagePath);
                     await safeSendMessage(targetJid, {
                         image: imgBuf,
                         caption: caption,
                         mimetype: mime
+                    });
+                }
+                else if (imagePath && (imagePath.startsWith('http://') || imagePath.startsWith('https://'))) {
+                    console.log(`[Bridge Outbound] Sending remote photo: ${imagePath}`);
+                    await safeSendMessage(targetJid, {
+                        image: { url: imagePath },
+                        caption: caption
                     });
                 }
                 // 3. Send Text
@@ -411,7 +426,7 @@ async function startBridge() {
                 // If user sent a photo with no text, prompt them for product code or name
                 if (messageContent?.imageMessage) {
                     try {
-                        await sock.sendMessage(senderJid, {
+                        await safeSendMessage(senderJid, {
                             text: "Hello! Please type the product name or code to check stock, wholesale price, or ask for photos (e.g. *'360-1 stock'*, *'RC car photo pathau'*)."
                         }, { quoted: msg });
                     } catch (_) {}
@@ -447,7 +462,7 @@ async function startBridge() {
                 const replyText = data?.reply || "I've checked the catalog, but couldn't retrieve the details.";
                 const images = Array.isArray(data?.images) ? data.images : [];
 
-                await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
+                await safeSendMessage(senderJid, { text: replyText }, { quoted: msg });
 
                 if (images.length > 0) {
                     console.log(`[Bridge] Sending ${images.length} product photos to +${senderPhone}...`);
@@ -459,14 +474,17 @@ async function startBridge() {
                         try {
                             if (imgPath && fs.existsSync(imgPath)) {
                                 console.log(`[Bridge] Sending local image: ${imgPath}`);
-                                await sock.sendMessage(senderJid, {
-                                    image: fs.readFileSync(imgPath),
-                                    caption: caption
+                                const imgBuf = await fs.promises.readFile(imgPath);
+                                const mime = imgPath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+                                await safeSendMessage(senderJid, {
+                                    image: imgBuf,
+                                    caption: caption,
+                                    mimetype: mime
                                 });
                                 await new Promise((r) => setTimeout(r, 600));
                             } else if (imgUrl) {
                                 console.log(`[Bridge] Sending remote image: ${imgUrl}`);
-                                await sock.sendMessage(senderJid, {
+                                await safeSendMessage(senderJid, {
                                     image: { url: imgUrl },
                                     caption: caption
                                 });
@@ -491,7 +509,7 @@ async function startBridge() {
                 console.error('[Bridge] Error handling message:', err.message);
                 const errMsg = "Sorry, our inventory server is temporarily busy. Please ask again in a moment!";
                 try {
-                    await sock.sendMessage(senderJid, { text: errMsg }, { quoted: msg });
+                    await safeSendMessage(senderJid, { text: errMsg }, { quoted: msg });
                 } catch (_) {}
             } finally {
                 try {

@@ -140,7 +140,7 @@ Respond strictly in valid JSON with this format:
         full_gen = f"{data.get('hook', '')} {data.get('caption', '')} {' '.join(data.get('hashtags', []))}"
         post_check = screen_text_for_policy(full_gen)
         if post_check["violates"]:
-            return _fallback_copy(product_name, price_str)
+            return _fallback_copy(product_name)
 
         return {
             "hook": data.get("hook", f"New Arrival: {product_name}"),

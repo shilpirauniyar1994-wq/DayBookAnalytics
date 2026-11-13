@@ -179,6 +179,43 @@ def get_slow_moving_broadcast_items(items_per_category: int = 5) -> List[Dict[st
     return all_selected
 
 
+def reindex_broadcast_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Re-indexes broadcast items and updates captions to match the actual list size."""
+    total = len(items)
+    for idx, it in enumerate(items, 1):
+        it["item_index"] = idx
+        it["photo_caption"] = (
+            f"📸 [{it['category']} | Item #{idx:02d}/{total:02d}]\n"
+            f"*{it['product_name']}*\n"
+            f"💬 Wholesale Carton Inquiries & Booking:\n"
+            f"👉 WhatsApp: +977 9803216856"
+        )
+        cost_price = it.get("cost_price")
+        selling_price = it.get("selling_price")
+        margin = it.get("margin", 0.0)
+        margin_pct = it.get("margin_pct", 0.0)
+        stock_str = f"{int(round(it.get('est_stock', 0)))} PCS"
+        cost_str = f"Rs. {cost_price:,.2f}" if cost_price else "Inquire Invoice"
+        selling_str = f"Rs. {selling_price:,.2f}" if selling_price else "Call for Quote"
+        margin_str = f"Rs. {margin:,.2f} ({margin_pct}%)" if margin > 0 else "N/A"
+        days = it.get("days_since_sale", 0)
+        days_str = "Never Sold" if days >= 9999 else f"{days} Days Unsold"
+        supplier = it.get("last_supplier", "Direct Import / Central Godown")
+
+        it["private_text"] = (
+            f"📊 *CONFIDENTIAL REFERENCE — Item #{idx:02d}*\n"
+            f"📦 Product: *{it['product_name']}*\n"
+            f"📂 Category: {it['category']}\n"
+            f"💰 Purchase Cost: {cost_str}\n"
+            f"🏷️ Wholesale Selling Rate: {selling_str}\n"
+            f"📈 Unit Profit Margin: {margin_str}\n"
+            f"📦 Current Available Stock: {stock_str}\n"
+            f"⏳ Movement Status: {days_str}\n"
+            f"🏢 Supplier: {supplier}"
+        )
+    return items
+
+
 def is_bridge_connected() -> bool:
     """Checks if Baileys bridge HTTP API is reachable and connected to WhatsApp."""
     try:
@@ -217,7 +254,8 @@ def send_broadcast_pack(recipient: str = DEFAULT_RECIPIENT, category_filter: Opt
     items = get_slow_moving_broadcast_items(items_per_category=items_per_category)
     if category_filter:
         items = [it for it in items if it["category"].lower() == category_filter.lower()]
-        print(f"Filtered for category '{category_filter}': {len(items)} items.")
+        items = reindex_broadcast_items(items)
+        print(f"Filtered for category '{category_filter}': {len(items)} items (re-indexed 1..{len(items):02d}).")
 
     if not items:
         print("No items found to broadcast.")
@@ -279,9 +317,10 @@ if __name__ == "__main__":
         items = get_slow_moving_broadcast_items(items_per_category=args.limit_per_group)
         if args.category:
             items = [it for it in items if it["category"].lower() == args.category.lower()]
+            items = reindex_broadcast_items(items)
 
         print("\n" + "=" * 80)
-        print(f"📋 PREVIEW: 50 SLOW-MOVING BROADCAST ITEMS")
+        print(f"📋 PREVIEW: {len(items)} SLOW-MOVING BROADCAST ITEMS")
         print("=" * 80)
         for it in items:
             print(f"\n--- Item #{it['item_index']:02d} [{it['category']}] ---")
